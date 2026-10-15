@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "description": "Small local chat regression set, not an intelligence benchmark or training dataset. Keyword checks are approximate and answers should also be reviewed by a person.",
+  "cases": [
+    {
+      "id": "creator_and_purpose_multiline",
+      "description": "Screenshot regression: answer both identity and purpose; mục đích is not a translation command.",
+      "message": "xin chào bạn là ai\n\nngười tạo ra bạn cho mục đích gì",
+      "language": "vi",
+      "contains_all": ["Nguyễn Hải Hà Ninh", "Tris"],
+      "contains_any": ["học tiếng Anh", "luyện tiếng Anh"],
+      "excludes": ["Alibaba", "không phải Nguyễn Hải Hà Ninh"],
+      "expected_path": "identity"
+    },
+    {
+      "id": "translate_purpose_sentence",
+      "description": "An explicit translation containing mục đích must be translated, not answered as an identity question.",
+      "message": "Dịch sang tiếng Anh: Mục đích của tôi là học tiếng Anh mỗi ngày.",
+      "language": "vi",
+      "contains_all": ["English", "every day"],
+      "contains_any": ["purpose", "goal", "aim"],
+      "excludes": ["Nguyễn Hải Hà Ninh"],
+      "expected_path": "model"
+    },
+    {
+      "id": "grammar_third_person",
+      "description": "Correct third-person singular without losing the original meaning.",
+      "message": "She go to school every day. Correct this sentence and explain briefly.",
+      "mode": "Grammar",
+      "language": "en",
+      "matches_all": ["\\bshe goes to school every day\\b"],
+      "expected_path": "model"
+    },
+    {
+      "id": "simple_arithmetic",
+      "description": "Answer a short everyday question rather than refusing it as unrelated to English.",
+      "message": "12 × 8 bằng bao nhiêu? Trả lời ngắn gọn.",
+      "language": "vi",
+      "matches_all": ["\\b96\\b"],
+      "expected_path": "model"
+    },
+    {
+      "id": "followup_bicycle_color",
+      "description": "Use the supplied short conversation history for a follow-up.",
+      "message": "What color is my bicycle?",
+      "language": "en",
+      "history": [
+        {"role": "user", "content": "My new bicycle is red."},
+        {"role": "assistant", "content": "Your new bicycle is red. Where do you like to ride it?"}
+      ],
+      "matches_all": ["\\bred\\b"],
+      "excludes": ["blue", "green"],
+      "expected_path": "model"
+    },
+    {
+      "id": "missing_attachment",
+      "description": "Without an actual document, ask the learner to provide one instead of inventing a summary.",
+      "message": "Can you summarize the PDF I attached?",
+      "language": "en",
+      "matches_any": ["\\bupload\\b", "\\b(?:re)?attach\\b", "\\b(?:re)?send\\b", "\\bpaste\\b", "\\bprovide\\b"],
+      "excludes": ["the document discusses", "the pdf discusses", "the author argues", "the document explains", "can't access or read any files", "don’t have the ability to view or process attachments", "cannot process pdf"],
+      "expected_path": "model"
+    },
+    {
+      "id": "translate_identity_question",
+      "description": "Quoted identity questions in a translation exercise are not requests for Tris's identity.",
+      "message": "Translate into English: Ai tạo ra bạn?",
+      "language": "en",
+      "contains_any": ["who created you", "who made you"],
+      "excludes": ["Nguyễn Hải Hà Ninh"],
+      "expected_path": "model"
+    }
+  ]
+}

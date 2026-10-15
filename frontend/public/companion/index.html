@@ -1,0 +1,1858 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tris Companion</title>
+<link rel="icon" href="/tris-mark.svg" />
+<!--
+  Tris Companion — một trình đồng hành kiểu Project AIRI (moeru-ai/airi, MIT),
+  được thu gọn riêng cho máy yếu: không bundle, không framework. Nhân vật chính
+  là linh vật Tris 2D (SVG thuần, không WebGL): biểu cảm, đi lại, mớm lời theo
+  giọng thật. Model 3D .vrm của bạn là chế độ phụ. Tái dùng toàn bộ backend Tris
+  (Ollama + TTS + STT local).
+-->
+<style>
+  :root {
+    --bg: #16181d;
+    --panel: #20242c;
+    --line: #2e333d;
+    --text: #dfe4ee;
+    --muted: #8d94a3;
+    --accent: #a5b9ff;
+    --accent-dim: #5d6f9e;
+    --danger: #ecaaa4;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font: 14px/1.6 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+  }
+  .app { display: flex; height: 100dvh; }
+  .stage {
+    flex: 1.1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(1200px 500px at 50% 20%, #202734 0%, var(--bg) 60%);
+    user-select: none;
+  }
+  /* Ảnh nền sân khấu (tùy chọn, xem docs/TRIS_STAGE_BG_PROMPT.md): chỉ bật khi tệp tải được.
+     Canvas 3D/VRM trong suốt nên cả 3 chế độ đều thấy nền. Lớp phủ tối + viền tối dần
+     giữ linh vật nổi bật và hòa vào khung chat, kể cả khi ảnh sáng hơn dự kiến. */
+  .stage.has-bg {
+    background:
+      radial-gradient(ellipse 75% 70% at 50% 45%, rgba(22,24,29,0) 40%, rgba(22,24,29,0.6) 100%),
+      linear-gradient(rgba(22,24,29,0.18), rgba(22,24,29,0.18)),
+      var(--stage-bg) center / cover no-repeat,
+      var(--bg);
+  }
+  /* Diễn viên: halo + linh vật đi cùng nhau khi Tris dạo quanh sân khấu. */
+  .actor {
+    position: relative;
+    width: min(50vh, 86%);
+    max-width: 420px;
+    display: grid;
+    place-items: center;
+    will-change: transform;
+    touch-action: none;
+    cursor: grab;
+  }
+  .actor.dragging { cursor: grabbing; }
+  .stage-halo {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(165,185,255,0.12) 0%, transparent 65%);
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+  }
+  .stage.speaking .stage-halo { opacity: 1; animation: halo 1.4s ease-in-out infinite; }
+  .stage:not(.speaking) .stage-halo { opacity: 0.45; }
+  @keyframes halo { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+  /* Không đặt transform-origin bằng CSS cho các phần tử SVG: mọi transform đã
+     tự mang tâm xoay/co trong thuộc tính, origin CSS sẽ cộng dồn và làm lệch
+     (đây chính là lỗi mắt "rơi" xuống khi chớp ở bản trước). */
+  #avatar { width: 100%; overflow: visible; position: relative; display: block; }
+  #vrm3d, #glb3d { width: 100%; height: 100%; display: block; position: absolute; inset: 0; }
+  #glb3d { cursor: pointer; touch-action: none; }
+  .stage.drop-hint::after {
+    content: 'Thả tệp .vrm vào đây';
+    position: absolute;
+    inset: auto 12% 12%;
+    text-align: center;
+    font-size: 13px;
+    color: var(--accent);
+    border: 2px dashed var(--accent-dim);
+    border-radius: 16px;
+    padding: 26px 0;
+    background: rgba(22,24,29,0.7);
+    pointer-events: none;
+    z-index: 4;
+  }
+  .status-line {
+    min-height: 22px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    position: relative;
+    z-index: 2;
+  }
+  .status-line .dots::after { content: '···'; animation: blinkdots 1.2s infinite; letter-spacing: 2px; }
+  @keyframes blinkdots { 0%,100% { opacity: 0.25; } 50% { opacity: 1; } }
+  .stage-tools {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    display: flex;
+    gap: 8px;
+    z-index: 3;
+  }
+  .tool-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 36px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .tool-btn.on { color: var(--accent); border-color: var(--accent-dim); }
+  .tool-btn:focus-visible, .send-btn:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .chat {
+    width: min(480px, 42%);
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .chat-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .chat-head img { width: 26px; height: 26px; }
+  .chat-head strong { font-size: 13px; }
+  .chat-head small { color: var(--muted); font-size: 10.5px; display: block; }
+  .working {
+    margin-left: auto;
+    align-self: flex-start;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.3px;
+    animation: workpulse 1.4s ease-in-out infinite;
+  }
+  @keyframes workpulse { 0%,100% { opacity: 0.45; } 50% { opacity: 1; } }
+  .messages { flex: 1; overflow-y: auto; padding: 16px 16px 8px; scroll-behavior: smooth; }
+  .msg { margin-bottom: 12px; max-width: 88%; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { margin-left: auto; background: #2b303a; border: 1px solid #363c48; padding: 8px 13px; border-radius: 14px 14px 4px 14px; }
+  .msg.tris { color: var(--text); }
+  .msg.tris .who { font-size: 10px; color: var(--accent); letter-spacing: 1px; margin-bottom: 3px; }
+  .msg.err { color: var(--danger); font-size: 12.5px; }
+  .composer { padding: 10px 12px 14px; border-top: 1px solid var(--line); }
+  .composer-row { display: flex; gap: 8px; align-items: flex-end; }
+  textarea {
+    flex: 1;
+    resize: none;
+    min-height: 44px;
+    max-height: 130px;
+    background: #1a1e25;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font: inherit;
+    font-size: 13.5px;
+  }
+  .icon-btn {
+    width: 44px; height: 44px;
+    flex: 0 0 44px;
+    display: grid; place-items: center;
+    background: #1a1e25;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .icon-btn.rec { color: #ff9d97; border-color: #6b4642; animation: recpulse 1.1s infinite; }
+  @keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .send-btn {
+    width: 44px; height: 44px; flex: 0 0 44px;
+    display: grid; place-items: center;
+    background: #4b7ee6; color: #fff;
+    border: none; border-radius: 50%;
+    cursor: pointer;
+  }
+  .send-btn:disabled { background: #3a3b41; color: #83858e; }
+  .foot {
+    margin-top: 8px;
+    font-size: 10px;
+    color: #6a7180;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .foot a { color: #7c89a6; }
+  .settings-pop {
+    position: absolute;
+    top: 56px; right: 14px;
+    width: 270px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 12.5px;
+    z-index: 5;
+    box-shadow: 0 8px 30px #0007;
+  }
+  .settings-pop.open { display: flex; }
+  .settings-pop label { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: var(--muted); }
+  .settings-pop select {
+    background: #1a1e25; color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 4px 8px; font: inherit;
+  }
+  .hidden { display: none !important; }
+  .auth-hint {
+    position: absolute; inset: 0;
+    display: grid; place-items: center;
+    background: rgba(16,18,22,0.88);
+    text-align: center;
+    padding: 30px;
+    z-index: 10;
+  }
+  .auth-hint p { max-width: 420px; color: var(--text); }
+  @media (prefers-reduced-motion: reduce) {
+    .stage.speaking .stage-halo { animation: none; }
+    .messages { scroll-behavior: auto; }
+    .working { animation: none; }
+  }
+  @media (max-width: 860px) {
+    .app { flex-direction: column-reverse; }
+    .stage { min-height: 44dvh; flex: none; }
+    .actor { width: min(30dvh, 260px); }
+    .chat { width: 100%; flex: 1; border-left: none; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="stage" id="stage" aria-label="Sân khấu Tris">
+    <!-- Chế độ chính: linh vật Tris 2D (SVG, siêu nhẹ). Kéo thả để dời chỗ, bấm để chọc. -->
+    <div class="actor" id="actor">
+      <div class="stage-halo" aria-hidden="true"></div>
+      <svg id="avatar" viewBox="0 -40 240 300" role="img" aria-label="Tris, linh vật ngôi sao">
+        <ellipse id="shadow" cx="120" cy="244" rx="58" ry="8" fill="#000" opacity="0.28"/>
+        <g id="avatar-root">
+          <g id="leg-l"><path d="M96 216 q-2 16 -8 22" stroke="#8fa3d6" stroke-width="9" stroke-linecap="round" fill="none"/></g>
+          <g id="leg-r"><path d="M144 216 q2 16 8 22" stroke="#8fa3d6" stroke-width="9" stroke-linecap="round" fill="none"/></g>
+          <g id="arm-l"><path d="M52 148 q-22 10 -26 30" stroke="#a5b9ff" stroke-width="9" stroke-linecap="round" fill="none"/></g>
+          <g id="arm-r"><path d="M188 148 q22 10 26 30" stroke="#a5b9ff" stroke-width="9" stroke-linecap="round" fill="none"/></g>
+          <rect x="48" y="96" width="144" height="126" rx="34" fill="#252b35" stroke="#3a4356" stroke-width="2"/>
+          <g id="head">
+            <rect x="34" y="24" width="172" height="140" rx="42" fill="#2b3342" stroke="#a5b9ff" stroke-width="3"/>
+            <g id="sparkle">
+              <path id="sparkle-star" d="M120 6 c1.1 5.6 4.4 8.9 10 10 -5.6 1.1 -8.9 4.4 -10 10 -1.1 -5.6 -4.4 -8.9 -10 -10 5.6 -1.1 8.9 -4.4 10 -10Z" fill="#cdd9ff"/>
+            </g>
+            <ellipse id="cheek-l" cx="70" cy="118" rx="11" ry="7" fill="#5d6f9e" opacity="0.5"/>
+            <ellipse id="cheek-r" cx="170" cy="118" rx="11" ry="7" fill="#5d6f9e" opacity="0.5"/>
+            <path id="brow-l" d="M68 62 Q79 59 91 62" stroke="#dbe6ff" stroke-width="4" stroke-linecap="round" fill="none" opacity="0"/>
+            <path id="brow-r" d="M149 62 Q161 59 172 62" stroke="#dbe6ff" stroke-width="4" stroke-linecap="round" fill="none" opacity="0"/>
+            <g id="eye-l">
+              <rect id="eye-l-white" x="72" y="72" width="16" height="30" rx="8" fill="#dbe6ff"/>
+              <circle id="pupil-l" cx="80" cy="82" r="4.5" fill="#2b3342"/>
+              <circle id="glint-l" cx="81.6" cy="80.4" r="1.3" fill="#ffffff"/>
+            </g>
+            <g id="eye-r">
+              <rect id="eye-r-white" x="152" y="72" width="16" height="30" rx="8" fill="#dbe6ff"/>
+              <circle id="pupil-r" cx="160" cy="82" r="4.5" fill="#2b3342"/>
+              <circle id="glint-r" cx="161.6" cy="80.4" r="1.3" fill="#ffffff"/>
+            </g>
+            <path id="eye-l-happy" d="M71 90 Q80 77 89 90" stroke="#dbe6ff" stroke-width="5" stroke-linecap="round" fill="none" opacity="0"/>
+            <path id="eye-r-happy" d="M151 90 Q160 77 169 90" stroke="#dbe6ff" stroke-width="5" stroke-linecap="round" fill="none" opacity="0"/>
+            <path id="mouth" d="M104 118 q16 8 32 0" stroke="#dbe6ff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <!-- nước mắt (buồn) -->
+            <path id="tear-l" d="M74 104 q-4 6 0 9 q4 -3 0 -9Z" fill="#8fd3ff" opacity="0"/>
+            <path id="tear-r" d="M166 104 q-4 6 0 9 q4 -3 0 -9Z" fill="#8fd3ff" opacity="0"/>
+          </g>
+          <path d="M120 148 c1.6 8 6.2 12.6 14 14 -7.8 1.6 -12.4 6.2 -14 14 -1.6 -7.8 -6.2 -12.4 -14 -14 7.8 -1.4 12.4 -6 14 -14Z" fill="#a5b9ff"/>
+          <!-- hiệu ứng cảm xúc quanh đầu -->
+          <g id="fx">
+            <text id="fx-mark" x="200" y="8" font-size="34" font-weight="700" fill="#cdd9ff" text-anchor="middle" opacity="0" font-family="Segoe UI, system-ui, sans-serif">?</text>
+            <g id="fx-think" opacity="0">
+              <ellipse cx="204" cy="-8" rx="26" ry="16" fill="#2b3342" stroke="#a5b9ff" stroke-width="2"/>
+              <circle cx="190" cy="16" r="4" fill="#2b3342" stroke="#a5b9ff" stroke-width="2"/>
+              <circle id="dot-1" cx="192" cy="-8" r="3.6" fill="#dbe6ff"/>
+              <circle id="dot-2" cx="204" cy="-8" r="3.6" fill="#dbe6ff"/>
+              <circle id="dot-3" cx="216" cy="-8" r="3.6" fill="#dbe6ff"/>
+            </g>
+            <path id="fx-heart" d="M200 3 C200 -2 193 -2 193 3 C193 7 200 10 200 12 C200 10 207 7 207 3 C207 -2 200 -2 200 3Z" fill="#ff8fb3" opacity="0"/>
+            <g id="fx-anger" opacity="0" stroke="#ff8f8f" stroke-width="3" stroke-linecap="round" fill="none">
+              <path d="M178 34 q6 4 0 8 M192 34 q-6 4 0 8 M180 30 q5 6 10 0 M180 46 q5 -6 10 0"/>
+            </g>
+            <g id="fx-sparkles" opacity="0" fill="#ffe08a">
+              <path d="M28 18 c.6 3 2.4 4.8 5.4 5.4 -3 .6 -4.8 2.4 -5.4 5.4 -.6 -3 -2.4 -4.8 -5.4 -5.4 3 -.6 4.8 -2.4 5.4 -5.4Z"/>
+              <path d="M214 40 c.8 4 3.2 6.4 7.2 7.2 -4 .8 -6.4 3.2 -7.2 7.2 -.8 -4 -3.2 -6.4 -7.2 -7.2 4 -.8 6.4 -3.2 7.2 -7.2Z"/>
+              <path d="M18 128 c.6 3 2.4 4.8 5.4 5.4 -3 .6 -4.8 2.4 -5.4 5.4 -.6 -3 -2.4 -4.8 -5.4 -5.4 3 -.6 4.8 -2.4 5.4 -5.4Z"/>
+            </g>
+            <g id="fx-listen" opacity="0" stroke="#a5b9ff" stroke-width="3" stroke-linecap="round" fill="none">
+              <path d="M24 78 q-9 14 0 28"/>
+              <path d="M13 70 q-15 22 0 44"/>
+            </g>
+            <text id="fx-z" x="196" y="10" font-size="22" font-weight="700" fill="#a5b9ff" opacity="0" font-family="Segoe UI, system-ui, sans-serif">z</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <!-- Chế độ phụ: model 3D của bạn (.vrm) -->
+    <!-- Chế độ Tris 3D: model .glb có shape key biểu cảm (mặc định: tris_mascot.glb) -->
+    <canvas id="glb3d" class="hidden" aria-label="Tris 3D — bấm để chọc"></canvas>
+    <canvas id="vrm3d" class="hidden" aria-label="Model 3D nhân vật của bạn"></canvas>
+    <div class="status-line" id="status" role="status" aria-live="polite"></div>
+    <div class="stage-tools">
+      <button class="tool-btn on" id="mode-toggle" aria-pressed="false" title="Đổi giữa linh vật Tris 2D và model 3D (.vrm) của bạn">
+        <span aria-hidden="true">✦</span><span id="mode-label">Linh vật 2D</span>
+      </button>
+      <button class="tool-btn" id="voice-toggle" aria-pressed="false" title="Tris tự đọc câu trả lời bằng giọng local, đọc ngay khi chữ hiện ra">
+        <span aria-hidden="true">🔊</span><span id="voice-label">Tắt giọng nói</span>
+      </button>
+      <button class="tool-btn" id="settings-toggle" aria-expanded="false" aria-controls="settings-pop" title="Tối ưu hiệu năng">
+        <span aria-hidden="true">⚙</span><span>Tối ưu</span>
+      </button>
+    </div>
+    <div class="settings-pop" id="settings-pop">
+      <label>
+        Giới hạn FPS nhân vật
+        <select id="fps-select">
+          <option value="30">30 — mượt</option>
+          <option value="15">15 — nhẹ</option>
+          <option value="8">8 — tiết kiệm nhất</option>
+        </select>
+      </label>
+      <label>
+        <span>Nhún nhảy khi nói</span>
+        <input type="checkbox" id="bounce-check" checked />
+      </label>
+      <label>
+        <span>Tris tự đi dạo khi rảnh</span>
+        <input type="checkbox" id="wander-check" checked />
+      </label>
+      <label>
+        <span>Model 3D của bạn (.vrm)</span>
+        <button type="button" class="tool-btn" id="vrm-pick" style="min-height:30px;padding:3px 10px">Chọn tệp</button>
+      </label>
+      <input type="file" id="vrm-file" accept=".vrm,.glb" class="hidden" />
+      <small id="vrm-note" style="color:var(--muted)">Chưa có model 3D — kéo thả tệp .vrm vào sân khấu cũng được. Nên tối ưu tệp bằng scripts\optimize_vrm.py nếu nặng hơn ~10 MB.</small>
+      <small style="color:var(--muted)">
+        Trang tự dừng toàn bộ hoạt hình khi bạn chuyển tab. Linh vật 2D là SVG thuần, không dùng WebGL;
+        model 3D dùng WebGL nhẹ và chịu FPS cap ở trên.
+      </small>
+      <small style="color:var(--muted)">
+        Lấy cảm hứng từ <a href="https://github.com/moeru-ai/airi" target="_blank" rel="noopener" style="color:#7c89a6">Project AIRI</a> (MIT).
+      </small>
+    </div>
+    <div class="auth-hint hidden" id="auth-hint">
+      <p>
+        <strong>Cần đăng nhập.</strong><br />
+        Hãy mở Companion bằng nút ngôi sao ✦ ở đầu trang ứng dụng Tris AI
+        (nút sẽ mang theo phiên đăng nhập), hoặc tắt chế độ bắt buộc đăng nhập.
+      </p>
+    </div>
+  </section>
+
+  <section class="chat">
+    <header class="chat-head">
+      <img src="/tris-mark.svg" alt="" />
+      <div>
+        <strong>Tris Companion</strong>
+        <small id="backend-note">Local · Tris 4b · giọng + mic chạy trên máy bạn</small>
+      </div>
+      <span class="working hidden" id="working" role="status" aria-live="polite">Working...</span>
+    </header>
+    <div class="messages" id="messages" role="log" aria-label="Hội thoại với Tris"></div>
+    <div class="composer">
+      <div class="composer-row">
+        <button class="icon-btn" id="mic-btn" title="Nhập bằng giọng nói (faster-whisper local)" aria-label="Nhập bằng giọng nói">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="Nhắn cho Tris…" aria-label="Nhắn tin cho Tris" maxlength="4000"></textarea>
+        <button class="send-btn" id="send-btn" aria-label="Gửi tin nhắn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </div>
+      <div class="foot">
+        <span id="foot-note">Tris có thể mắc lỗi.</span>
+        <span id="fps-note">FPS: 30</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+/* ============ helpers ============ */
+const $ = (id) => document.getElementById(id);
+const messagesEl = $('messages'), input = $('input'), sendBtn = $('send-btn'),
+      statusEl = $('status'), stage = $('stage'), actorEl = $('actor'), avatarEl = $('avatar');
+
+// Ảnh nền sân khấu là tùy chọn: gắn tệp đầu tiên tải được, không có thì giữ nền gradient.
+(function loadStageBackground(urls) {
+  if (!urls.length) return;
+  const probe = new Image();
+  probe.onload = () => {
+    stage.style.setProperty('--stage-bg', `url("${urls[0]}")`);
+    stage.classList.add('has-bg');
+  };
+  probe.onerror = () => loadStageBackground(urls.slice(1));
+  probe.src = urls[0];
+})(['/companion/backgrounds/stage.webp', '/companion/backgrounds/stage.png']);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+function now() { return performance.now(); }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, k) { return a + (b - a) * k; }
+function f1(v) { return Math.round(v * 10) / 10; } // gọn chuỗi thuộc tính SVG
+
+/* ============ auth ============ */
+let token = '';
+try {
+  const hash = new URLSearchParams(location.hash.slice(1));
+  if (hash.get('t')) {
+    token = hash.get('t');
+    store.set('tris.companion.token', token);
+    // Xoá token khỏi thanh địa chỉ (window.history — biến lịch sử chat tên khác).
+    window.history.replaceState(null, '', location.pathname);
+  } else token = store.get('tris.companion.token', '');
+} catch {}
+const headers = () => token ? { Authorization: 'Bearer ' + token } : {};
+
+/* ============ settings (tối ưu cho máy yếu) ============ */
+const settings = Object.assign({ fps: 30, autoSpeak: false, bounce: true, wander: true }, store.get('tris.companion.settings', {}));
+// Bản cũ có chế độ mèo Live2D (đã bỏ vì không đi lại được và nặng hơn) → quy về linh vật 2D.
+if (!['svg', 'glb', 'vrm'].includes(settings.liveMode)) settings.liveMode = 'svg';
+delete settings.live2d;
+$('fps-select').value = String(settings.fps);
+$('bounce-check').checked = settings.bounce;
+$('wander-check').checked = settings.wander;
+$('voice-toggle').classList.toggle('on', settings.autoSpeak);
+$('voice-label').textContent = settings.autoSpeak ? 'Đang mở giọng' : 'Tắt giọng nói';
+$('voice-toggle').setAttribute('aria-pressed', String(settings.autoSpeak));
+$('fps-note').textContent = 'FPS: ' + settings.fps;
+
+let hidden = document.hidden, lastFrame = 0;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ============ "Working..." ở góc khung chat ============ */
+// Đếm số tác vụ đang chạy (chat, STT, chờ giọng có thể chồng nhau); hàm trả về idempotent.
+let workingCount = 0;
+function startWorking() {
+  workingCount++;
+  $('working').classList.remove('hidden');
+  let open = true;
+  return () => {
+    if (!open) return;
+    open = false;
+    workingCount = Math.max(0, workingCount - 1);
+    $('working').classList.toggle('hidden', workingCount === 0);
+  };
+}
+
+/* ============ Emotion engine — nhận cảm xúc từ câu trả lời (VN + EN + emoji) ============ */
+const EMOTION_HINTS = [
+  [/❤|💕|💖|😍|🥰|😘|yêu quá|thương|(?:^|\s)love(?:\s|$)|adore/iu, 'love'],
+  [/😄|😊|😁|😀|🤗|🎉|🥳|✨|🌞|vui|tuy[eệ]t|hài l[oò]ng|hay lắm|giỏi lắm|great|happy|wonderful|awesome|amazing|well done|good job/i, 'happy'],
+  [/😢|😭|🥺|😞|😔|buồn|(?:^|\s)tệ(?![\p{L}])|thất v[oọ]ng|xot|xót|tiếc|(?:^|\s)sad(?:\s|$)|sorry|unfortunately/iu, 'sad'],
+  [/😠|😤|😡|⚠|l[ôồỗ]i|c[aả]nh b[aá]o|c[ảẩa]n th[ạậa]n|error|warning|careful|angry/i, 'angry'],
+  [/😱|😲|😮|🤯|wow|(?:^|\s)[ôồ]i|(?:^|\s)[ơơ]i|bất ngờ|surprise|really\?|oh my/i, 'surprised'],
+  [/🤔|tò mò|th[ủử] xem|maybe|perhaps|curious|hmm/i, 'curious'],
+  [/\?|nh[ỉỉ]|ch[ứứ]|why|how come/i, 'question'],
+];
+function detectEmotion(text) {
+  for (const [re, emotion] of EMOTION_HINTS) if (re.test(String(text))) return emotion;
+  return 'neutral';
+}
+// Cảm xúc tạm thời (do câu trả lời / bị chọc) tự trôi về trạng thái nền sau ~4.5 s.
+let currentEmotion = 'neutral', emotionUntil = 0;
+let thinking = false, listening = false, sleepy = false, lastActivity = now();
+function setEmotion(emotion, ms = 4500) {
+  if (!emotion || emotion === 'neutral') return;
+  currentEmotion = emotion;
+  emotionUntil = now() + ms;
+  onEmotionStart(emotion);
+}
+function applyEmotion(text) { setEmotion(detectEmotion(text)); }
+function expressionName() {
+  if (listening) return 'listening';
+  if (thinking) return 'thinking';
+  if (now() < emotionUntil) return currentEmotion === 'question' ? 'curious' : currentEmotion;
+  if (sleepy) return 'sleepy';
+  return 'neutral';
+}
+function markActivity() {
+  lastActivity = now();
+  if (sleepy) { sleepy = false; setEmotion('surprised', 900); }
+}
+
+/* ============ voice out: đọc từng câu NGAY khi chữ hiện ra ============ */
+// Không đọc icon/emoji: chỉ giữ chữ. Backend cũng lọc lần nữa (speech_text).
+const EMOJI_RE = /[\p{Extended_Pictographic}⌀-⏿☀-➿⬀-⯿︎️‍⃣\u{1F000}-\u{1FAFF}\u{E0020}-\u{E007F}]/gu;
+function speakable(text) {
+  return String(text || '')
+    .replace(/\[Tris media:[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(EMOJI_RE, ' ')
+    .replace(/[([]\s*[)\]]/g, ' ')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    // Gạch ngang phân cách và số thứ tự (kể cả khi nằm trong **...**) không được đọc thành lời.
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,}|={3,})\s*$/gm, ' ')
+    .replace(/^\s*(?:\*\*|__)?\s*(?:[-*+•]|\d+[.)])\s+/gm, '')
+    // Xuống dòng sau câu đã kết thúc (kể cả khi còn ngoặc/nháy/in nghiêng: "way!)*") → chỉ là khoảng trắng;
+    // dòng mới không có dấu câu (gạch đầu dòng, tiêu đề) → thêm ngắt nghỉ.
+    .replace(/([.!?…,:;]["'”’)\]*_]*)[ \t]*\n+/g, '$1 ')
+    .replace(/([^\s.!?…,:;])[ \t]*\n+/g, '$1. ')
+    .replace(/[*_>|~]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+const VI_RE = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
+const HAS_WORD_RE = /[\p{L}\p{N}]/u;
+// Gia sư hay chèn câu mẫu tiếng Anh vào lời giảng tiếng Việt: "How are you?", **Nice to meet you**.
+// Phần được đánh dấu (ngoặc kép, in đậm/nghiêng, `code`) không có dấu tiếng Việt và từ 2 từ trở lên
+// → đọc bằng giọng English; phần còn lại theo ngôn ngữ của câu. Từ đơn giữ nguyên để khỏi ngắt quãng.
+const MARKED_SPAN = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|"[^"\n]+"|“[^”\n]+”|`[^`\n]+`)/;
+function languageSegments(raw) {
+  const base = VI_RE.test(speakable(raw)) ? 'vi' : 'en';
+  const segments = [];
+  // Mỗi lần đổi giọng là một lượt tổng hợp riêng (~1 s chi phí): chỉ đổi sang English khi cụm có từ 3 trở lên,
+  // và các đoạn cùng ngôn ngữ liền nhau được gộp lại để ít lượt hơn.
+  const wordCount = (s) => s.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+  for (const part of String(raw).split(MARKED_SPAN)) {
+    const text = speakable(part);
+    if (!HAS_WORD_RE.test(text)) continue;
+    const english = MARKED_SPAN.test(part) && base === 'vi' && !VI_RE.test(text) && /[A-Za-z]/.test(text)
+      && wordCount(text) >= 3;
+    const lang = english ? 'en' : base;
+    const last = segments[segments.length - 1];
+    if (last && last.lang === lang) last.text = `${last.text} ${text}`.trim();
+    else segments.push({ text, lang });
+  }
+  return segments;
+}
+
+// Cắt câu theo luồng NDJSON: mỗi khi có dấu kết câu + khoảng trắng (hoặc xuống
+// dòng) là gửi đi đọc ngay. Câu đầu được phép ngắn để giọng bắt đầu sớm; các
+// câu sau gom tối thiểu ~60 ký tự để đỡ khoảng lặng giữa các lần tổng hợp.
+const SENTENCE_END = /[.!?…。！？]+["'”’)\]]*(?=\s)|\n+/g;
+function createSentenceSplitter(onSentence) {
+  let buf = '', emitted = 0;
+  const emit = (raw) => {
+    const text = speakable(raw);
+    if (!HAS_WORD_RE.test(text)) return; // chỉ có icon/dấu câu → bỏ qua
+    emitted++;
+    onSentence(text, raw);
+  };
+  // Câu mẫu tiếng Anh nằm trong "..." hoặc **...** thường có dấu chấm/chấm than bên trong:
+  // không cắt giữa chừng (trừ khi xuống dòng), để languageSegments đọc trọn cả câu mẫu.
+  const openSpan = (piece) => {
+    const line = piece.slice(piece.lastIndexOf('\n') + 1).replace(/^\s*[-*+•]\s+/, '');
+    const count = (re) => (line.match(re) || []).length;
+    const bare = line.replace(/\*\*/g, '');
+    return count(/"/g) % 2 === 1 || count(/\*\*/g) % 2 === 1 || count(/`/g) % 2 === 1
+      || (bare.match(/\*/g) || []).length % 2 === 1 || count(/“/g) > count(/”/g);
+  };
+  const drain = (final) => {
+    let cut = 0, m;
+    SENTENCE_END.lastIndex = 0;
+    while ((m = SENTENCE_END.exec(buf))) {
+      const end = m.index + m[0].length;
+      const piece = buf.slice(cut, end);
+      const newline = m[0][0] === '\n';
+      if ((newline || !openSpan(piece)) && speakable(piece).length >= (emitted === 0 ? 8 : 60)) { emit(piece); cut = end; }
+    }
+    let rest = buf.slice(cut);
+    // Đoạn rất dài không có dấu câu: tách ở dấu phẩy/khoảng trắng gần nhất.
+    while (speakable(rest).length > 280) {
+      const at = Math.max(rest.lastIndexOf(', ', 260), rest.lastIndexOf(' ', 260));
+      if (at <= 0) break;
+      emit(rest.slice(0, at + 1));
+      rest = rest.slice(at + 1);
+    }
+    if (final && rest.trim()) { emit(rest); rest = ''; }
+    buf = rest;
+  };
+  return { push(delta) { buf += delta; drain(false); }, end() { drain(true); } };
+}
+
+// Hàng đợi giọng: tổng hợp tuần tự (server chuyển giọng chỉ xử lý 1 câu/lần),
+// phát nối tiếp; câu sau được tổng hợp trong lúc câu trước đang phát.
+let audioCtx = null, analyser = null, timeData = null, freqData = null;
+let mouthLevel = 0, mouthShown = 0, lastRawMs = 0, talkingTurn = false;
+const speech = { gen: 0, queue: [], ready: [], synthBusy: false, playing: null, abort: null, failed: false, working: null, turnOpen: false };
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new AudioContext();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.connect(audioCtx.destination);
+    timeData = new Uint8Array(analyser.fftSize);
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => undefined);
+  return audioCtx;
+}
+function setTalking(on) {
+  talkingTurn = on;
+  stage.classList.toggle('speaking', on);
+  if (!on) mouthLevel = 0;
+}
+function updateSpeechWorking() {
+  // "Working..." chỉ khi đang CHỜ giọng (chưa có câu nào phát); khi đang nói, miệng + halo đã thể hiện.
+  const waiting = (speech.queue.length > 0 || speech.synthBusy) && !speech.playing && !speech.ready.length;
+  if (waiting && !speech.working) speech.working = startWorking();
+  if (!waiting && speech.working) { speech.working(); speech.working = null; }
+}
+function finishTurnIfIdle() {
+  if (!speech.turnOpen && !speech.playing && !speech.ready.length && !speech.queue.length && !speech.synthBusy) setTalking(false);
+  updateSpeechWorking();
+}
+function cancelSpeech() {
+  speech.gen++;
+  speech.queue.length = 0;
+  speech.ready.length = 0;
+  speech.turnOpen = false;
+  speech.failed = false;
+  try { speech.abort?.abort(); } catch {}
+  if (speech.playing) {
+    const src = speech.playing;
+    speech.playing = null;
+    try { src.onended = null; src.stop(); } catch {}
+  }
+  setTalking(false);
+  updateSpeechWorking();
+}
+function beginSpeechTurn() {
+  cancelSpeech();
+  ensureAudio();
+  speech.turnOpen = true;
+  return speech.gen;
+}
+function endSpeechTurn(gen) {
+  if (gen !== speech.gen) return;
+  speech.turnOpen = false;
+  finishTurnIfIdle();
+}
+function enqueueSpeech(text, emotion, gen, lang) {
+  if (gen !== speech.gen || speech.failed) return;
+  speech.queue.push({ text, emotion, gen, lang: lang || (VI_RE.test(text) ? 'vi' : 'en') });
+  updateSpeechWorking();
+  void runSynth();
+}
+async function synthesize(text, lang) {
+  const ctrl = new AbortController();
+  speech.abort = ctrl;
+  const res = await fetch('/v1/speech', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers() },
+    body: JSON.stringify({ text: text.slice(0, 780), language: lang }),
+    signal: ctrl.signal,
+  });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    const err = new Error(typeof d.detail === 'string' && d.detail ? d.detail : 'Giọng local chưa sẵn sàng.');
+    // Server chuyển giọng bận (một tab/tác vụ khác) → thử lại; lỗi cấu hình thì dừng.
+    err.retryable = res.status === 429 || /bận|Đang tổng hợp giọng khác|429/i.test(err.message);
+    throw err;
+  }
+  const blob = await res.blob();
+  return ensureAudio().decodeAudioData(await blob.arrayBuffer());
+}
+async function runSynth() {
+  if (speech.synthBusy) return;
+  speech.synthBusy = true;
+  updateSpeechWorking();
+  try {
+    while (speech.queue.length) {
+      const item = speech.queue.shift();
+      if (item.gen !== speech.gen) continue;
+      let buffer = null;
+      // Dừng ngay nếu người dùng đã đổi lượt (kể cả khi đang chờ backoff sau lỗi bận).
+      for (let attempt = 0; attempt < 3 && item.gen === speech.gen; attempt++) {
+        try { buffer = await synthesize(item.text, item.lang); break; }
+        catch (e) {
+          if (item.gen !== speech.gen || e.name === 'AbortError') break;
+          if (!e.retryable || attempt === 2) {
+            if (!speech.failed) { speech.failed = true; addMsg('tris', '⚠ ' + (e.message || 'Không phát được giọng nói.'), 'err'); }
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        }
+      }
+      if (item.gen !== speech.gen) continue;
+      if (!buffer) { speech.queue = speech.queue.filter((q) => q.gen !== item.gen); speech.turnOpen = false; break; }
+      speech.ready.push({ buffer, emotion: item.emotion, gen: item.gen });
+      pumpPlayback();
+    }
+  } finally {
+    speech.synthBusy = false;
+    finishTurnIfIdle();
+    if (speech.queue.length) void runSynth();
+  }
+}
+function pumpPlayback() {
+  if (speech.playing) return;
+  const item = speech.ready.shift();
+  if (!item) { finishTurnIfIdle(); return; }
+  if (item.gen !== speech.gen) { pumpPlayback(); return; }
+  const ctx = ensureAudio();
+  const src = ctx.createBufferSource();
+  src.buffer = item.buffer;
+  src.connect(analyser);
+  speech.playing = src;
+  setTalking(true);
+  // Biểu cảm khớp với câu đang được nói.
+  if (item.emotion && item.emotion !== 'neutral') setEmotion(item.emotion);
+  src.onended = () => {
+    if (speech.playing !== src) return;
+    speech.playing = null;
+    mouthLevel = 0;
+    pumpPlayback();
+  };
+  src.start();
+  updateSpeechWorking();
+}
+// Lipsync — thuật toán port từ airi (packages/model-driver-lipsync): volume^0.7,
+// cap 0.7, cập nhật thô mỗi 40 ms + lerp 120 ms; noise-gate dải giọng ~85-4000 Hz.
+function updateLipsync(t, dt) {
+  if (speech.playing && analyser && t - lastRawMs >= 40) {
+    lastRawMs = t;
+    analyser.getByteTimeDomainData(timeData);
+    let sum = 0;
+    for (let i = 0; i < timeData.length; i++) { const v = (timeData[i] - 128) / 128; sum += v * v; }
+    const rms = Math.sqrt(sum / timeData.length);
+    analyser.getByteFrequencyData(freqData);
+    let voice = 0, bins = 0;
+    for (let i = 2; i < 88 && i < freqData.length; i++) { voice += freqData[i]; bins++; }
+    const voiceLevel = voice / Math.max(1, bins * 255);
+    let raw = Math.min(rms * 6 * 0.9, 1);
+    raw = Math.pow(raw, 0.7) * 0.7;
+    if (voiceLevel < 0.05) raw *= 0.25;
+    mouthLevel = raw;
+  } else if (!speech.playing) mouthLevel = 0;
+  mouthShown += (mouthLevel - mouthShown) * Math.min(1, dt / 120);
+}
+
+/* ============ Linh vật Tris 2D: biểu cảm + đi lại + tương tác ============ */
+const el = {
+  root: $('avatar-root'), head: $('head'), shadow: $('shadow'),
+  legL: $('leg-l'), legR: $('leg-r'), armL: $('arm-l'), armR: $('arm-r'),
+  eyeLW: $('eye-l-white'), eyeRW: $('eye-r-white'), pupilL: $('pupil-l'), pupilR: $('pupil-r'),
+  glintL: $('glint-l'), glintR: $('glint-r'), happyL: $('eye-l-happy'), happyR: $('eye-r-happy'),
+  browL: $('brow-l'), browR: $('brow-r'), cheekL: $('cheek-l'), cheekR: $('cheek-r'),
+  mouth: $('mouth'), sparkle: $('sparkle'), sparkleStar: $('sparkle-star'),
+  tearL: $('tear-l'), tearR: $('tear-r'),
+  fxMark: $('fx-mark'), fxThink: $('fx-think'), fxHeart: $('fx-heart'), fxAnger: $('fx-anger'),
+  fxSparkles: $('fx-sparkles'), fxListen: $('fx-listen'), fxZ: $('fx-z'),
+  dots: [$('dot-1'), $('dot-2'), $('dot-3')],
+};
+// Mỗi biểu cảm là một bộ tham số mục tiêu; khuôn mặt nội suy mượt về đó.
+const EXPRESSIONS = {
+  neutral:   { open: 1,    size: 1,    happy: 0, brow: 0,   inner: 0,  lift: 0, asym: 0, smile: 0.6,  mouth: 0,    width: 16, cheek: 0.5,  pink: 0,   tilt: 0,  lookY: 0,  droop: 0, color: '#cdd9ff', fx: null },
+  happy:     { open: 1,    size: 1,    happy: 1, brow: 0,   inner: 0,  lift: 2, asym: 0, smile: 1,    mouth: 0.28, width: 17, cheek: 0.95, pink: 0.6, tilt: 3,  lookY: 0,  droop: 0, color: '#ffe08a', fx: 'sparkles' },
+  love:      { open: 1,    size: 1,    happy: 1, brow: 0,   inner: 0,  lift: 1, asym: 0, smile: 0.9,  mouth: 0.12, width: 14, cheek: 1,    pink: 1,   tilt: -4, lookY: 0,  droop: 0, color: '#ffb3cf', fx: 'heart' },
+  sad:       { open: 0.72, size: 0.96, happy: 0, brow: 1,   inner: -1, lift: 0, asym: 0, smile: -0.75, mouth: 0,   width: 13, cheek: 0.2,  pink: 0,   tilt: -5, lookY: 2,  droop: 1, color: '#7f93c9', fx: 'tear' },
+  angry:     { open: 0.7,  size: 1,    happy: 0, brow: 1,   inner: 1,  lift: 0, asym: 0, smile: -0.55, mouth: 0.08, width: 14, cheek: 0.25, pink: 0,   tilt: 0,  lookY: 4,  droop: 0, color: '#ff9d97', fx: 'anger' },
+  surprised: { open: 1.15, size: 1.12, happy: 0, brow: 1,   inner: 0,  lift: 7, asym: 0, smile: 0,    mouth: 0.62, width: 10, cheek: 0.45, pink: 0,   tilt: 0,  lookY: -1, droop: 0, color: '#ffffff', fx: '!' },
+  curious:   { open: 1.05, size: 1.04, happy: 0, brow: 1,   inner: 0,  lift: 1, asym: 1, smile: 0.3,  mouth: 0,    width: 12, cheek: 0.5,  pink: 0,   tilt: 8,  lookY: 0,  droop: 0, color: '#cdd9ff', fx: '?' },
+  thinking:  { open: 0.85, size: 1,    happy: 0, brow: 0.7, inner: 0,  lift: 1, asym: 0.6, smile: 0.1, mouth: 0,    width: 10, cheek: 0.4,  pink: 0,   tilt: -6, lookY: -3, droop: 0, color: '#cdd9ff', fx: 'think' },
+  listening: { open: 1.05, size: 1.03, happy: 0, brow: 0.4, inner: 0,  lift: 3, asym: 0, smile: 0.7,  mouth: 0,    width: 15, cheek: 0.6,  pink: 0.2, tilt: 6,  lookY: 0,  droop: 0, color: '#a5b9ff', fx: 'listen' },
+  sleepy:    { open: 0.12, size: 1,    happy: 0, brow: 0,   inner: 0,  lift: 0, asym: 0, smile: 0.15, mouth: 0.1,  width: 9,  cheek: 0.4,  pink: 0,   tilt: -7, lookY: 1,  droop: 0.6, color: '#7f93c9', fx: 'z' },
+};
+const face = { ...EXPRESSIONS.neutral, lookX: 0, fxAlpha: {} };
+const FX_KEYS = ['mark', 'think', 'heart', 'anger', 'sparkles', 'listen', 'z', 'tear'];
+for (const k of FX_KEYS) face.fxAlpha[k] = 0;
+let markText = '?';
+
+const actor = {
+  x: 0, targetX: 0, vx: 0, walkPhase: 0, walking: 0, facing: 0,
+  hopStart: -1e9, hopDur: 520, hopHeight: 24, landAt: -1e9,
+  shakeUntil: 0, waveUntil: 0, cheerUntil: 0,
+  drag: null, lift: 0, fallFrom: 0, fallStart: -1e9,
+  gaze: { x: 0, y: 0 }, gazeTarget: { x: 0, y: 0 }, lastPointer: -1e9, nextGlanceAt: 0,
+  nextIdleAt: now() + 3500, clicks: [],
+};
+const WALK_SPEED = 70; // px/s
+let blinkAt = now() + rand(1800, 5200), blinkT = 0;
+
+function hop(height = 24, dur = 520) {
+  if (reducedMotion) return;
+  const t = now();
+  if (t - actor.hopStart < actor.hopDur) return; // đang nhảy dở
+  actor.hopStart = t; actor.hopDur = dur; actor.hopHeight = height;
+}
+function wave(ms = 1600) { actor.waveUntil = now() + ms; }
+function onEmotionStart(emotion) {
+  if (emotion === 'happy') { hop(22); actor.cheerUntil = now() + 900; }
+  else if (emotion === 'love') hop(14, 600);
+  else if (emotion === 'surprised') hop(12, 360);
+  else if (emotion === 'angry' && !reducedMotion) actor.shakeUntil = now() + 520;
+}
+function maxActorX() {
+  return Math.max(0, (stage.clientWidth - actorEl.clientWidth) / 2 - 8);
+}
+
+function updateBehavior(t, dt) {
+  // Đang trả lời (kể cả khi tắt giọng), nghe hoặc nói đều là hoạt động: không được ngủ giữa chừng.
+  const engaged = thinking || listening || talkingTurn || busy;
+  if (engaged) lastActivity = t;
+  sleepy = !engaged && !actor.drag && t - lastActivity > 60000;
+  // Đi dạo khi rảnh: chọn ngẫu nhiên đi tới chỗ khác / nhảy / vẫy tay / nhìn quanh.
+  if (!engaged && !actor.drag && !sleepy && t >= actor.nextIdleAt) {
+    actor.nextIdleAt = t + rand(5000, 12000);
+    const roll = Math.random();
+    const range = maxActorX();
+    if (roll < 0.45 && settings.liveMode === 'svg' && settings.wander && !reducedMotion && range > 30) {
+      let target = rand(-range, range);
+      if (Math.abs(target - actor.x) < 60) target = clamp(actor.x + (actor.x > 0 ? -1 : 1) * rand(80, 160), -range, range);
+      actor.targetX = target;
+    } else if (roll < 0.6) hop(18);
+    else if (roll < 0.72) wave(1400);
+    else actor.nextGlanceAt = 0; // liếc nhìn quanh ngay
+  }
+  if (engaged && !actor.drag) actor.targetX = actor.x; // đang nghe/nghĩ/nói thì đứng lại
+  actor.targetX = clamp(actor.targetX, -maxActorX(), maxActorX());
+  actor.x = clamp(actor.x, -maxActorX(), maxActorX());
+  const dx = actor.targetX - actor.x;
+  if (!actor.drag && Math.abs(dx) > 0.5) {
+    const step = Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt / 1000);
+    actor.x += step;
+    actor.vx = step / (dt / 1000);
+    actor.walkPhase += dt / 1000 * 10;
+  } else actor.vx = 0;
+  actor.walking = lerp(actor.walking, actor.vx !== 0 ? 1 : 0, Math.min(1, dt / 120));
+  actor.facing = lerp(actor.facing, clamp(actor.vx / WALK_SPEED, -1, 1), Math.min(1, dt / 160));
+  // Rơi xuống sau khi được thả ra.
+  if (!actor.drag && actor.lift > 0) {
+    const p = clamp((t - actor.fallStart) / 360, 0, 1);
+    actor.lift = actor.fallFrom * (1 - p * p);
+    if (p >= 1) { actor.lift = 0; actor.landAt = t; }
+  }
+  // Ánh mắt: theo con trỏ; con trỏ đứng yên > 4 s thì tự liếc chỗ khác.
+  if (t - actor.lastPointer > 4000 && t >= actor.nextGlanceAt) {
+    actor.nextGlanceAt = t + rand(2000, 5000);
+    actor.gazeTarget = Math.random() < 0.4 ? { x: 0, y: 0 } : { x: rand(-1, 1), y: rand(-0.8, 0.6) };
+  }
+  if (engaged && t - actor.lastPointer > 1500) actor.gazeTarget = { x: talkingTurn ? 0.35 : 0, y: 0 }; // khi nói nhìn về phía khung chat
+  actor.gaze.x = lerp(actor.gaze.x, actor.gazeTarget.x, Math.min(1, dt / 90));
+  actor.gaze.y = lerp(actor.gaze.y, actor.gazeTarget.y, Math.min(1, dt / 90));
+}
+
+function mouthPath(open, smile, width) {
+  const cx = 120, y = 117;
+  const corner = y - smile * 2;
+  const curve = y + smile * 12;
+  const l = f1(cx - width), r = f1(cx + width);
+  if (open < 0.04) return { d: `M${l} ${f1(corner)} Q${cx} ${f1(curve)} ${r} ${f1(corner)}`, fill: 'none' };
+  const top = curve - 2 - open * 2;
+  const bottom = curve + 2 + open * 20;
+  return { d: `M${l} ${f1(corner)} Q${cx} ${f1(top)} ${r} ${f1(corner)} Q${cx} ${f1(bottom)} ${l} ${f1(corner)}Z`, fill: '#141824' };
+}
+function mixColor(a, b, k) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const c = (s) => Math.round(lerp((pa >> s) & 255, (pb >> s) & 255, k));
+  return `rgb(${c(16)},${c(8)},${c(0)})`;
+}
+let sparkleColor = '#cdd9ff';
+
+function renderMascot(t, dt) {
+  const name = expressionName();
+  const target = EXPRESSIONS[name] || EXPRESSIONS.neutral;
+  const k = Math.min(1, dt / 110);
+  for (const key of ['open', 'size', 'happy', 'brow', 'inner', 'lift', 'asym', 'smile', 'mouth', 'width', 'cheek', 'pink', 'tilt', 'lookY', 'droop']) {
+    face[key] = lerp(face[key], target[key], k);
+  }
+  if (target.fx === '?' || target.fx === '!') markText = target.fx;
+  const fxOn = { mark: target.fx === '?' || target.fx === '!', think: target.fx === 'think', heart: target.fx === 'heart',
+    anger: target.fx === 'anger', sparkles: target.fx === 'sparkles', listen: target.fx === 'listen', z: target.fx === 'z', tear: target.fx === 'tear' };
+  for (const key of FX_KEYS) face.fxAlpha[key] = lerp(face.fxAlpha[key], fxOn[key] ? 1 : 0, Math.min(1, dt / 160));
+  sparkleColor = target.color;
+  const time = t / 1000;
+  const motion = reducedMotion ? 0 : 1;
+
+  // --- thân: thở/nhún, nhảy, lắc khi giận, đổ người theo hướng đi, co giãn khi tiếp đất
+  const speakingNow = talkingTurn;
+  let bob = Math.sin(time * (speakingNow ? 2.6 : 1.4)) * (speakingNow && settings.bounce ? 5 : 2.4) * motion;
+  bob += Math.abs(Math.sin(actor.walkPhase)) * -3 * actor.walking * motion;
+  const hp = clamp((t - actor.hopStart) / actor.hopDur, 0, 1);
+  const hopping = hp > 0 && hp < 1;
+  const hopY = hopping ? -Math.sin(hp * Math.PI) * actor.hopHeight : 0;
+  const sinceLand = Math.min(t - (actor.hopStart + actor.hopDur), t - actor.landAt);
+  const squash = !reducedMotion && sinceLand >= 0 && sinceLand < 160 ? Math.sin((sinceLand / 160) * Math.PI) * 0.08 : 0;
+  const sy = 1 - squash - (hopping && hp < 0.12 ? 0.05 : 0), sx = 1 + squash * 0.7;
+  const shakeX = t < actor.shakeUntil ? Math.sin(time * 48) * 3 : 0;
+  const sway = Math.sin(time * 0.9) * 1.2 * motion;
+  const lean = actor.facing * 6;
+  const droopY = face.droop * 5;
+  el.root.setAttribute('transform',
+    `translate(${f1(sway + shakeX)} ${f1(bob + hopY + droopY)}) rotate(${f1(lean)} 120 240) translate(120 240) scale(${sx.toFixed(3)} ${sy.toFixed(3)}) translate(-120 -240)`);
+  const airborne = clamp((-hopY + actor.lift) / 60, 0, 1);
+  el.shadow.setAttribute('rx', f1(58 * (1 - airborne * 0.4)));
+  el.shadow.setAttribute('opacity', (0.28 * (1 - airborne * 0.5)).toFixed(3));
+
+  // --- chân: bước khi đi, đung đưa khi bị nhấc lên, co lại khi nhảy
+  let legL = 0, legR = 0;
+  if (actor.drag || actor.lift > 0) { legL = Math.sin(time * 7) * 14; legR = -Math.sin(time * 7 + 0.6) * 14; }
+  else if (hopping) { legL = 10; legR = -10; }
+  else { legL = Math.sin(actor.walkPhase) * 18 * actor.walking; legR = -legL; }
+  el.legL.setAttribute('transform', `rotate(${f1(legL)} 96 214)`);
+  el.legR.setAttribute('transform', `rotate(${f1(legR)} 144 214)`);
+
+  // --- tay: vẫy, ăn mừng, giơ lên khi ngạc nhiên/bị nhấc, khua khi nói, đung đưa khi đi
+  let armL = Math.sin(time * 1.2) * 3 * motion, armR = -armL;
+  if (actor.walking > 0.05) { armL = -Math.sin(actor.walkPhase) * 14 * actor.walking; armR = armL; }
+  if (speakingNow) { const g = Math.sin(time * 5) * (4 + mouthShown * 14) * motion; armL = -g; armR = g; }
+  if (name === 'sad') { armL = 12; armR = -12; }
+  if (name === 'surprised' || actor.drag) { armL = 70 + Math.sin(time * 9) * 6 * motion; armR = -armL; }
+  if (t < actor.cheerUntil) { const c = 55 + Math.sin(time * 14) * 12 * motion; armL = c; armR = -c; }
+  if (name === 'thinking') armR = -25;
+  if (t < actor.waveUntil) armR = -105 + Math.sin(time * 14) * 18 * motion;
+  el.armL.setAttribute('transform', `rotate(${f1(armL)} 54 148)`);
+  el.armR.setAttribute('transform', `rotate(${f1(armR)} 186 148)`);
+
+  // --- đầu nghiêng theo cảm xúc + quay nhẹ theo hướng đi
+  const tilt = face.tilt * motion + (speakingNow ? Math.sin(time * 1.7) * 2 * motion : 0);
+  el.head.setAttribute('transform', `translate(${f1(actor.facing * 4)} 0) rotate(${f1(tilt)} 120 150)`);
+
+  // --- mắt: tính trực tiếp kích thước (không dùng transform → hết lỗi lệch khi chớp)
+  if (t >= blinkAt) { blinkT = 1; blinkAt = t + rand(2200, 5600) * (name === 'sleepy' ? 0.6 : 1); }
+  let closing = 0;
+  if (blinkT > 0) { blinkT = Math.max(0, blinkT - dt / 140); closing = Math.sin(Math.min(1, blinkT) * Math.PI); }
+  const happyShown = face.happy >= 0.5;
+  const lookX = clamp(actor.gaze.x * 3 + actor.facing * 2.5, -3.5, 3.5);
+  const lookY = clamp(actor.gaze.y * 3 + face.lookY, -4, 4);
+  for (const [white, pupil, glint, cx, side] of [[el.eyeLW, el.pupilL, el.glintL, 80, -1], [el.eyeRW, el.pupilR, el.glintR, 160, 1]]) {
+    const asymLift = face.asym * (side < 0 ? 0.12 : 0);
+    const open = Math.max(0.08, face.open * (1 + asymLift) * (1 - 0.92 * closing));
+    const w = 16 * face.size, h = 30 * face.size * open;
+    white.setAttribute('x', f1(cx - w / 2));
+    white.setAttribute('y', f1(87 - h / 2));
+    white.setAttribute('width', f1(w));
+    white.setAttribute('height', f1(h));
+    white.setAttribute('rx', f1(Math.min(w / 2, h / 2)));
+    // Chuyển hẳn giữa mắt tròn và mắt cười (không mờ chồng): tránh vòng/đốm lạ khi chớp.
+    white.setAttribute('opacity', happyShown ? '0' : '1');
+    const r = (name === 'surprised' ? 3.4 : 4.5) * face.size;
+    const room = Math.max(0, h / 2 - r - 1.5);
+    const px = cx + lookX, py = 87 + clamp(-5 + lookY, -room, room);
+    const pupilAlpha = clamp((h - 9) / 6, 0, 1) * (1 - face.happy);
+    pupil.setAttribute('cx', f1(px)); pupil.setAttribute('cy', f1(py)); pupil.setAttribute('r', f1(r));
+    pupil.setAttribute('opacity', pupilAlpha.toFixed(3));
+    glint.setAttribute('cx', f1(px + 1.6)); glint.setAttribute('cy', f1(py - 1.6));
+    glint.setAttribute('opacity', pupilAlpha.toFixed(3));
+  }
+  // Mắt cười cũng nhắm khi chớp: ép dẹt quanh mép dưới của vòng cung.
+  el.happyL.setAttribute('opacity', happyShown ? '1' : '0');
+  el.happyR.setAttribute('opacity', happyShown ? '1' : '0');
+  const lidK = Math.max(0.12, 1 - 0.88 * closing).toFixed(3);
+  el.happyL.setAttribute('transform', `translate(80 90) scale(1 ${lidK}) translate(-80 -90)`);
+  el.happyR.setAttribute('transform', `translate(160 90) scale(1 ${lidK}) translate(-160 -90)`);
+
+  // --- lông mày: chỉ hiện khi có cảm xúc (giận: chụm xuống; buồn: nhướng trong; tò mò: nhướng một bên)
+  const by = 62 - face.lift;
+  const inner = face.inner * 6, outer = -face.inner * 2.5;
+  const arch = 3 * (1 - clamp(face.inner, 0, 1)); // giận: nét thẳng xếch; còn lại: cong nhẹ
+  const yLo = by + outer - face.asym * 6, yLi = by + inner - face.asym * 6;
+  const yRi = by + inner, yRo = by + outer;
+  el.browL.setAttribute('d', `M68 ${f1(yLo)} Q79 ${f1((yLo + yLi) / 2 - arch)} 91 ${f1(yLi)}`);
+  el.browR.setAttribute('d', `M149 ${f1(yRi)} Q161 ${f1((yRi + yRo) / 2 - arch)} 172 ${f1(yRo)}`);
+  el.browL.setAttribute('opacity', face.brow.toFixed(3));
+  el.browR.setAttribute('opacity', face.brow.toFixed(3));
+
+  // --- miệng: hình dạng theo cảm xúc + mớm lời theo biên độ giọng thật
+  const open = Math.max(face.mouth, mouthShown * 1.15);
+  const m = mouthPath(open, face.smile, face.width + mouthShown * 3);
+  el.mouth.setAttribute('d', m.d);
+  el.mouth.setAttribute('fill', m.fill);
+  el.mouth.setAttribute('stroke-width', open > 0.04 ? '4' : '5');
+
+  // --- má hồng
+  const cheekColor = mixColor('#5d6f9e', '#e39ab8', face.pink);
+  for (const c of [el.cheekL, el.cheekR]) {
+    c.setAttribute('opacity', face.cheek.toFixed(3));
+    c.setAttribute('fill', cheekColor);
+    c.setAttribute('rx', f1(11 + face.pink * 2));
+  }
+
+  // --- ngôi sao trên đầu: nhấp nháy, đổi màu theo cảm xúc
+  el.sparkleStar.setAttribute('fill', sparkleColor);
+  el.sparkle.setAttribute('opacity', (0.55 + 0.45 * Math.abs(Math.sin(time * (name === 'happy' ? 4 : 1.7)))).toFixed(3));
+
+  // --- hiệu ứng
+  const fa = face.fxAlpha;
+  const floatY = Math.sin(time * 2.2) * 3 * motion;
+  el.fxMark.textContent = markText;
+  el.fxMark.setAttribute('opacity', fa.mark.toFixed(3));
+  el.fxMark.setAttribute('transform', `translate(0 ${f1(floatY)})`);
+  el.fxThink.setAttribute('opacity', fa.think.toFixed(3));
+  el.dots.forEach((d, i) => d.setAttribute('opacity', (0.3 + 0.7 * Math.max(0, Math.sin(time * 4 - i * 0.9))).toFixed(3)));
+  el.fxHeart.setAttribute('opacity', fa.heart.toFixed(3));
+  el.fxHeart.setAttribute('transform', `translate(0 ${f1(-((time * 14) % 18) * motion)}) translate(200 3) scale(${(1.6 + Math.sin(time * 6) * 0.15 * motion).toFixed(3)}) translate(-200 -3)`);
+  el.fxAnger.setAttribute('opacity', (fa.anger * (0.7 + 0.3 * Math.abs(Math.sin(time * 6)))).toFixed(3));
+  el.fxSparkles.setAttribute('opacity', (fa.sparkles * (0.5 + 0.5 * Math.abs(Math.sin(time * 5)))).toFixed(3));
+  el.fxListen.setAttribute('opacity', (fa.listen * (0.45 + 0.55 * Math.abs(Math.sin(time * 3)))).toFixed(3));
+  const zRise = motion ? (time * 10) % 24 : 0;
+  el.fxZ.setAttribute('opacity', (fa.z * (1 - zRise / 30)).toFixed(3));
+  el.fxZ.setAttribute('transform', `translate(${f1(zRise * 0.4)} ${f1(-zRise)})`);
+  const tearFall = motion ? (time * 22) % 26 : 0;
+  for (const tear of [el.tearL, el.tearR]) {
+    tear.setAttribute('opacity', (fa.tear * (1 - tearFall / 30)).toFixed(3));
+    tear.setAttribute('transform', `translate(0 ${f1(tearFall)})`);
+  }
+
+  // --- vị trí trên sân khấu (đi dạo / kéo thả)
+  actorEl.style.transform = `translate3d(${f1(actor.x)}px, ${f1(-actor.lift)}px, 0)`;
+}
+
+/* ============ tương tác chuột: nhìn theo, bấm để chọc, kéo thả để dời chỗ ============ */
+stage.addEventListener('pointermove', (e) => {
+  markActivity();
+  actor.lastPointer = now();
+  // 2D: nhìn từ đầu linh vật; 3D: đầu nằm khoảng 1/3 phía trên giữa sân khấu.
+  const r = (settings.liveMode === 'svg' ? actorEl : stage).getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height * (settings.liveMode === 'svg' ? 0.42 : 0.36);
+  const reach = settings.liveMode === 'svg' ? 160 : Math.max(160, r.width * 0.4);
+  actor.gazeTarget = { x: clamp((e.clientX - cx) / reach, -1, 1), y: clamp((e.clientY - cy) / reach, -1, 1) };
+});
+// Bấm nhẹ: vui + nhảy + vẫy; chọc liên tục 5 lần trong 3 s thì dỗi (dùng chung cho 2D và 3D).
+function pokeTris() {
+  const t = now();
+  actor.clicks = actor.clicks.filter((c) => t - c < 3000).concat(t);
+  if (actor.clicks.length >= 5) { actor.clicks = []; setEmotion('angry', 2600); }
+  else { setEmotion(actor.clicks.length >= 3 ? 'love' : 'happy', 2600); wave(1200); }
+}
+actorEl.addEventListener('pointerdown', (e) => {
+  if (settings.liveMode !== 'svg') return;
+  markActivity();
+  actor.drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x0: actor.x, lift0: actor.lift, moved: false, t0: now() };
+  try { actorEl.setPointerCapture(e.pointerId); } catch {}
+});
+actorEl.addEventListener('pointermove', (e) => {
+  const d = actor.drag;
+  if (!d || d.id !== e.pointerId) return;
+  const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+  if (!d.moved && Math.hypot(dx, dy) > 6) { d.moved = true; actorEl.classList.add('dragging'); setEmotion('surprised', 60000); }
+  if (!d.moved) return;
+  actor.x = clamp(d.x0 + dx, -maxActorX(), maxActorX());
+  actor.targetX = actor.x;
+  actor.lift = clamp(d.lift0 - dy, 0, Math.max(0, stage.clientHeight * 0.35));
+});
+function endDrag(e) {
+  const d = actor.drag;
+  if (!d || d.id !== e.pointerId) return;
+  actor.drag = null;
+  actorEl.classList.remove('dragging');
+  try { actorEl.releasePointerCapture(e.pointerId); } catch {}
+  if (d.moved) {
+    actor.fallFrom = actor.lift; actor.fallStart = now();
+    if (actor.lift <= 0) actor.landAt = now();
+    setEmotion('happy', 1800);
+    return;
+  }
+  pokeTris();
+}
+actorEl.addEventListener('pointerup', endDrag);
+actorEl.addEventListener('pointercancel', endDrag);
+window.addEventListener('resize', () => { actor.x = clamp(actor.x, -maxActorX(), maxActorX()); actor.targetX = clamp(actor.targetX, -maxActorX(), maxActorX()); });
+input.addEventListener('keydown', () => markActivity());
+
+/* ============ vòng lặp hoạt hình (rAF + FPS cap + dừng khi ẩn tab) ============ */
+function frame(t) {
+  requestAnimationFrame(frame);
+  if (hidden) return; // dừng hoàn toàn khi tab ẩn
+  // Giới hạn FPS người dùng chọn được giữ khi đang nói/đi; chỉ tăng khi kéo thả (cần mượt tay).
+  const fps = (actor.drag || actor.lift > 0) ? Math.max(settings.fps, 30) : settings.fps;
+  if (t - lastFrame < 1000 / fps - 1) return;
+  const dt = lastFrame ? Math.min(100, t - lastFrame) : 16;
+  lastFrame = t;
+  updateLipsync(t, dt); // model 3D cũng dùng mouthShown
+  if (settings.liveMode === 'vrm') return; // model VRM có vòng lặp riêng
+  updateBehavior(t, dt);
+  if (settings.liveMode === 'svg') renderMascot(t, dt);
+  else renderGlb(t, dt);
+}
+requestAnimationFrame(frame);
+document.addEventListener('visibilitychange', () => {
+  hidden = document.hidden;
+  lastFrame = 0;
+  if (hidden) stopVrmLoop();
+  else if (settings.liveMode === 'vrm' && vrm) startVrmLoop();
+});
+
+/* ============ chế độ nhân vật ============ */
+const MODES = ['svg', 'glb', 'vrm'];
+const MODE_LABEL = { svg: 'Linh vật 2D', glb: 'Tris 3D', vrm: 'Model VRM' };
+function setMode(mode) {
+  settings.liveMode = mode;
+  store.set('tris.companion.settings', settings);
+  actorEl.classList.toggle('hidden', mode !== 'svg');
+  glbCanvas.classList.toggle('hidden', mode !== 'glb');
+  vrmCanvas.classList.toggle('hidden', mode !== 'vrm');
+  $('mode-label').textContent = MODE_LABEL[mode];
+  $('mode-toggle').setAttribute('aria-pressed', String(mode !== 'svg'));
+  if (mode === 'glb') {
+    stopVrmLoop();
+    if (glb) { sizeGlb(); setStatus(''); }
+    else void ensureGlb().catch((e) => { setStatus(''); addMsg('tris', '⚠ Không nạp được Tris 3D: ' + e.message, 'err'); });
+  } else if (mode === 'vrm') {
+    // ensureVrm được người gọi trực tiếp đảm nhiệm (boot/acceptVrmFile) để
+    // không hai lời gọi chen nhau; ở đây chỉ nói thật khi chưa có model.
+    if (vrm) startVrmLoop();
+    else if (!vrmLoading) setStatus('Chưa có model 3D — kéo thả tệp .vrm vào sân khấu, hoặc bấm ⚙ Tối ưu để chọn tệp.', true);
+  } else {
+    setStatus('');
+    stopVrmLoop();
+  }
+}
+$('mode-toggle').addEventListener('click', () => {
+  const next = MODES[(MODES.indexOf(settings.liveMode) + 1) % MODES.length];
+  setMode(next);
+  if (next === 'vrm' && !vrm && !vrmLoading) {
+    void ensureVrm().then((r) => { if (!r && settings.liveMode === 'vrm') setStatus('Chưa có model 3D — kéo thả tệp .vrm vào sân khấu, hoặc bấm ⚙ Tối ưu để chọn tệp.', true); })
+      .catch((e) => { setStatus(''); addMsg('tris', '⚠ Không nạp được model 3D đã lưu: ' + e.message, 'err'); });
+  }
+});
+
+/* ============ Tris 3D (.glb): shape key biểu cảm + mấp máy miệng + trục quay đầu/thân ============ */
+// Hợp đồng với tris_mascot.glb (Blender): TRIS_BodyPivot/TRIS_HeadPivot/TRIS_Arm_L/R/TRIS_HoverRing,
+// TRIS_Eyes có 14 shape key, TRIS_Mouth có aa/oh/smile/frown, vật liệu LED phát sáng. Model .glb khác
+// vẫn hiển thị được; phần nào không có (trục, shape key) thì bỏ qua.
+const glbCanvas = $('glb3d');
+const GLB_DEFAULT_URL = '/companion/models/tris_mascot.glb';
+let glb = null, glbLoading = null;
+const EYE_BY_EXPRESSION = { happy: 'happy', love: 'love', sad: 'sad', angry: 'angry', surprised: 'surprised',
+  curious: 'curious', thinking: 'thinking', listening: 'listening', sleepy: 'sleepy' };
+const EYES_ALREADY_CLOSED = new Set(['happy', 'love', 'sleepy']); // không chớp chồng lên mắt cười/ngủ
+// Hiệu ứng quanh đầu: model có vật thể TRIS_FX_<tên> thì hiện theo cảm xúc (xem docs/TRIS_3D_FX_PROMPT.md).
+const FX_BY_EXPRESSION = { love: ['Heart'], curious: ['Question'], surprised: ['Exclaim'], sleepy: ['Zzz'],
+  angry: ['Anger'], happy: ['Sparkles'], thinking: ['Think'], listening: ['Listen'], sad: ['Tear_L', 'Tear_R'] };
+// Màu LED theo cảm xúc (giá trị tuyến tính, cùng tông với ảnh render của model).
+const GLB_LED = { happy: [1, 0.72, 0.18], love: [1, 0.32, 0.52], sad: [0.22, 0.32, 1], angry: [1, 0.16, 0.1],
+  surprised: [1, 1, 1], thinking: [0.85, 0.9, 1], listening: [0.32, 0.48, 1], sleepy: [0.28, 0.36, 0.72] };
+
+async function loadGlbScene(url) {
+  if (!window.THREE) await loadScript('/companion/lib/three.min.js');
+  if (!window.THREE.GLTFLoader) await loadScript('/companion/lib/GLTFLoader.js');
+  const loader = new THREE.GLTFLoader();
+  return new Promise((ok, fail) => loader.load(url, ok, undefined, () => fail(new Error('Không đọc được tệp .glb này.'))));
+}
+function morphMesh(root, name, wanted) {
+  let found = root.getObjectByName(name);
+  if (found && !found.morphTargetDictionary) found = found.children?.find((c) => c.morphTargetDictionary) || null;
+  if (found?.morphTargetDictionary) return found;
+  // Model khác: lấy mesh đầu tiên có shape key mang tên mong đợi.
+  let any = null;
+  root.traverse((o) => { if (!any && o.morphTargetDictionary && wanted.some((w) => w in o.morphTargetDictionary)) any = o; });
+  return any;
+}
+function disposeTree(root) {
+  root.traverse((o) => {
+    o.geometry?.dispose?.();
+    for (const m of [].concat(o.material || [])) { for (const v of Object.values(m)) v?.isTexture && v.dispose(); m.dispose?.(); }
+  });
+}
+async function ensureGlb(sourceUrl) {
+  if (glb?.root && !sourceUrl) return glb;
+  if (glbLoading) return glbLoading;
+  glbLoading = (async () => {
+    setStatus('Đang nạp Tris 3D…', true);
+    let url = sourceUrl, temp = null;
+    if (!url) {
+      const saved = await readOpfsModel('tris-companion.glb');
+      url = saved ? (temp = URL.createObjectURL(saved)) : GLB_DEFAULT_URL;
+    }
+    let gltf;
+    try { gltf = await loadGlbScene(url); } finally { if (temp) URL.revokeObjectURL(temp); }
+    if (!glb) {
+      const renderer = new THREE.WebGLRenderer({ canvas: glbCanvas, alpha: true, antialias: true });
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.25)); // chặn pixel ratio — tối ưu GPU yếu
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.05;
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x2a2f3d, 0.9));
+      const key = new THREE.DirectionalLight(0xffffff, 1.5);
+      key.position.set(1.2, 2.2, 2.4);
+      const rim = new THREE.DirectionalLight(0xa5b9ff, 0.8);
+      rim.position.set(-1.6, 1.4, -1.8);
+      scene.add(key, rim);
+      const camera = new THREE.PerspectiveCamera(28, 1, 0.05, 20);
+      glb = { renderer, scene, camera, root: null, blinkAt: now() + rand(1800, 5200), blinkT: 0 };
+      window.addEventListener('resize', sizeGlb);
+    }
+    if (glb.root) { glb.scene.remove(glb.root); disposeTree(glb.root); }
+    const root = gltf.scene;
+    const find = (name) => root.getObjectByName(name) || null;
+    const eyes = morphMesh(root, 'TRIS_Eyes', ['blink', 'happy']);
+    const mouth = morphMesh(root, 'TRIS_Mouth', ['aa']);
+    const led = eyes && [].concat(eyes.material)[0]?.emissive ? [].concat(eyes.material)[0] : null;
+    const body = find('TRIS_BodyPivot') || root;
+    const ring = find('TRIS_HoverRing');
+    const fx = {};
+    root.traverse((o) => {
+      if (/^TRIS_FX_/.test(o.name) && !/^TRIS_FX_/.test(o.parent?.name || '')) {
+        fx[o.name.slice(7)] = { obj: o, base: o.position.clone(), baseScale: o.scale.clone(), s: 0 };
+        o.visible = false;
+      }
+    });
+    Object.assign(glb, {
+      root, eyes, mouth, led, body, ring, fx,
+      head: find('TRIS_HeadPivot'), armL: find('TRIS_Arm_L'), armR: find('TRIS_Arm_R'),
+      ringMat: ring ? [].concat(ring.material)[0] : null,
+      base: { bodyY: body.position.y, bodyX: body.position.x },
+      ledNeutral: led ? led.emissive.clone() : null, ledNow: led ? led.emissive.clone() : null,
+      // "lookLeft" là nhìn sang trái màn hình hay trái nhân vật? Đo một lần bằng chính shape key.
+      lookScreenRight: null,
+    });
+    glb.scene.add(root);
+    // Khung hình: đặt camera bao trọn nhân vật, chừa chỗ cho thanh công cụ phía trên.
+    const box = new THREE.Box3().setFromObject(root);
+    const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
+    const dist = (size.y / 2) / Math.tan(THREE.MathUtils.degToRad(glb.camera.fov / 2)) * 1.32;
+    glb.camera.position.set(center.x, center.y + size.y * 0.04, center.z + dist);
+    glb.camera.lookAt(center.x, center.y, center.z);
+    glb.lookScreenRight = detectLookRight(eyes);
+    sizeGlb();
+    window.__glb = glb; // gỡ lỗi/kiểm thử
+    setStatus('');
+    return glb;
+  })();
+  try { return await glbLoading; } finally { glbLoading = null; }
+}
+// Trả về tên shape key làm mắt dịch sang PHẢI màn hình (camera nhìn từ phía trước nhân vật).
+function detectLookRight(eyes) {
+  const d = eyes?.morphTargetDictionary;
+  if (!d || !('lookLeft' in d) || !('lookRight' in d)) return null;
+  const pos = eyes.geometry.morphAttributes.position?.[d.lookRight];
+  if (!pos) return 'lookRight';
+  let sum = 0;
+  for (let i = 0; i < pos.count; i++) sum += pos.getX(i);
+  const relative = eyes.geometry.morphTargetsRelative;
+  const base = eyes.geometry.attributes.position;
+  if (!relative) { for (let i = 0; i < base.count; i++) sum -= base.getX(i); }
+  return sum >= 0 ? 'lookRight' : 'lookLeft';
+}
+function sizeGlb() {
+  if (!glb) return;
+  const box = glbCanvas.parentElement;
+  const w = box.clientWidth, h = box.clientHeight;
+  if (!w || !h) return;
+  glb.renderer.setSize(w, h, false);
+  glb.camera.aspect = w / h;
+  glb.camera.updateProjectionMatrix();
+}
+function setMorph(mesh, name, value, k) {
+  const index = mesh?.morphTargetDictionary?.[name];
+  if (index === undefined) return;
+  const inf = mesh.morphTargetInfluences;
+  inf[index] = k >= 1 ? value : lerp(inf[index], value, k);
+}
+function renderGlb(t, dt) {
+  if (!glb?.root) return;
+  // Nạp lúc tab ẩn thì sân khấu có kích thước 0: chỉnh lại khi canvas đã có kích thước thật.
+  if (glbCanvas.clientWidth && (glbCanvas.clientWidth !== glb.cssW || glbCanvas.clientHeight !== glb.cssH)) {
+    glb.cssW = glbCanvas.clientWidth; glb.cssH = glbCanvas.clientHeight;
+    sizeGlb();
+  }
+  const name = expressionName();
+  const k = Math.min(1, dt / 110);
+  const time = t / 1000, motion = reducedMotion ? 0 : 1;
+  // --- mắt: biểu cảm + chớp + nhìn theo chuột (giới hạn 0.5 khi đang có biểu cảm, theo hợp đồng model)
+  if (glb.eyes) {
+    for (const morph of Object.keys(glb.eyes.morphTargetDictionary)) {
+      if (!['blink', 'lookLeft', 'lookRight', 'lookUp', 'lookDown'].includes(morph)) setMorph(glb.eyes, morph, morph === EYE_BY_EXPRESSION[name] ? 1 : 0, k);
+    }
+    if (t >= glb.blinkAt) { glb.blinkT = 1; glb.blinkAt = t + rand(2200, 5600) * (name === 'sleepy' ? 0.6 : 1); }
+    let closing = 0;
+    if (glb.blinkT > 0) { glb.blinkT = Math.max(0, glb.blinkT - dt / 140); closing = Math.sin(Math.min(1, glb.blinkT) * Math.PI); }
+    setMorph(glb.eyes, 'blink', EYES_ALREADY_CLOSED.has(name) ? 0 : closing, 1);
+    const cap = name === 'neutral' ? 0.9 : 0.5;
+    const gx = clamp(actor.gaze.x, -1, 1) * cap;
+    const gy = clamp(actor.gaze.y + (name === 'thinking' ? -0.7 : 0), -1, 1) * cap;
+    const right = glb.lookScreenRight || 'lookRight', left = right === 'lookRight' ? 'lookLeft' : 'lookRight';
+    setMorph(glb.eyes, right, Math.max(0, gx), k);
+    setMorph(glb.eyes, left, Math.max(0, -gx), k);
+    setMorph(glb.eyes, 'lookDown', Math.max(0, gy), k);
+    setMorph(glb.eyes, 'lookUp', Math.max(0, -gy), k);
+  }
+  // --- miệng: mấp máy theo biên độ giọng thật + nét miệng theo cảm xúc
+  if (glb.mouth) {
+    setMorph(glb.mouth, 'aa', clamp(mouthShown * 1.5, 0, 1), 1);
+    setMorph(glb.mouth, 'oh', name === 'surprised' ? 0.7 : 0, k);
+    setMorph(glb.mouth, 'smile', name === 'happy' || name === 'love' ? 0.9 : name === 'listening' || name === 'neutral' ? 0.25 : 0, k);
+    setMorph(glb.mouth, 'frown', name === 'sad' || name === 'angry' ? 0.8 : 0, k);
+  }
+  // --- LED: đổi màu theo cảm xúc, sáng lên theo giọng khi nói
+  if (glb.led) {
+    glb.ledColors ||= Object.fromEntries(Object.entries(GLB_LED).map(([key, c]) => [key, new THREE.Color(c[0], c[1], c[2])]));
+    glb.ledNow.lerp(glb.ledColors[name] || glb.ledNeutral, k);
+    glb.led.emissive.copy(glb.ledNow);
+    glb.led.emissiveIntensity = 1 + (talkingTurn ? mouthShown * 0.9 : 0);
+  }
+  // --- thân: lơ lửng, nhảy khi vui, lắc khi giận, chùng xuống khi buồn
+  const hp = clamp((t - actor.hopStart) / actor.hopDur, 0, 1);
+  const hopY = hp > 0 && hp < 1 ? Math.sin(hp * Math.PI) * actor.hopHeight * 0.0025 : 0;
+  const bob = Math.sin(time * (talkingTurn ? 2.6 : 1.4)) * (talkingTurn && settings.bounce ? 0.012 : 0.007) * motion;
+  const droop = name === 'sad' ? -0.012 : name === 'sleepy' ? -0.008 : 0;
+  glb.body.position.y = glb.base.bodyY + bob + hopY + droop;
+  glb.body.position.x = glb.base.bodyX + (t < actor.shakeUntil ? Math.sin(time * 48) * 0.006 : 0);
+  glb.body.rotation.z = Math.sin(time * 0.9) * 0.02 * motion;
+  // --- đầu: quay theo chuột, nghiêng theo cảm xúc, gật nhẹ khi nói
+  if (glb.head) {
+    const tilt = { curious: 0.16, listening: 0.1, thinking: -0.12, sad: -0.08, sleepy: -0.14, happy: 0.05, love: -0.06 }[name] || 0;
+    glb.head.rotation.y = lerp(glb.head.rotation.y, clamp(actor.gaze.x, -1, 1) * 0.35, k);
+    glb.head.rotation.x = lerp(glb.head.rotation.x, clamp(actor.gaze.y, -1, 1) * 0.18 + (name === 'sad' ? 0.12 : 0)
+      + (talkingTurn ? Math.sin(time * 3.1) * 0.03 * motion : 0), k);
+    glb.head.rotation.z = lerp(glb.head.rotation.z, tilt, k);
+  }
+  // --- tay: vẫy, ăn mừng, giơ lên khi ngạc nhiên, khua khi nói (tay trái nhân vật ở bên +X)
+  if (glb.armL && glb.armR) {
+    let left = Math.sin(time * 1.2) * 0.04 * motion, right = -left;
+    if (talkingTurn) { const g = Math.sin(time * 5) * (0.05 + mouthShown * 0.3) * motion; left = g; right = -g; }
+    if (name === 'sad') { left = -0.06; right = 0.06; }
+    if (name === 'surprised') { left = 0.9; right = -0.9; }
+    if (t < actor.cheerUntil) { left = 1.5 + Math.sin(time * 14) * 0.2 * motion; right = -left; }
+    if (t < actor.waveUntil) left = 2.3 + Math.sin(time * 14) * 0.35 * motion;
+    const ka = Math.min(1, dt / 80);
+    glb.armL.rotation.z = lerp(glb.armL.rotation.z, left, ka);
+    glb.armR.rotation.z = lerp(glb.armR.rotation.z, right, ka);
+  }
+  // --- hiệu ứng quanh đầu (nếu model có): bật/tắt bằng co giãn, lơ lửng; Zzz bay lên, nước mắt rơi
+  const activeFx = FX_BY_EXPRESSION[name] || [];
+  for (const [key, f] of Object.entries(glb.fx || {})) {
+    f.s = lerp(f.s, activeFx.includes(key) ? 1 : 0, Math.min(1, dt / 120));
+    f.obj.visible = f.s > 0.02;
+    if (!f.obj.visible) continue;
+    f.obj.scale.copy(f.baseScale).multiplyScalar(f.s);
+    const drift = key === 'Zzz' ? (time * 0.05) % 0.06 : key.startsWith('Tear') ? -((time * 0.08) % 0.05)
+      : Math.sin(time * 2.2) * 0.008;
+    f.obj.position.set(f.base.x, f.base.y + drift * motion, f.base.z);
+  }
+  // --- vòng sáng dưới chân: nhấp nháy, co lại khi nhảy lên
+  if (glb.ring) {
+    if (glb.ringMat?.emissive) glb.ringMat.emissiveIntensity = 0.7 + 0.5 * Math.abs(Math.sin(time * (talkingTurn ? 4 : 1.6)));
+    glb.ring.scale.setScalar(1 - hopY * 2.5);
+  }
+  glb.renderer.render(glb.scene, glb.camera);
+}
+let glbPointer = null;
+glbCanvas.addEventListener('pointerdown', (e) => { markActivity(); glbPointer = { x: e.clientX, y: e.clientY, t: now() }; });
+glbCanvas.addEventListener('pointerup', (e) => {
+  const p = glbPointer; glbPointer = null;
+  if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) < 8 && now() - p.t < 600) pokeTris();
+});
+async function acceptGlbFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    setMode('glb');
+    await ensureGlb(url);
+    await saveOpfsModel(file, 'tris-companion.glb');
+    const rigged = glb.eyes ? 'có shape key biểu cảm' : 'chưa có shape key biểu cảm — chỉ chuyển động thân';
+    addMsg('tris', `Đã nạp ${file.name} cho chế độ Tris 3D (${rigged}) ✦`);
+  } catch (e) {
+    setStatus('');
+    addMsg('tris', '⚠ ' + e.message, 'err');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/* ============ Model 3D của bạn (.vrm) ============ */
+let vrm = null; // { renderer, scene, camera, model, mouse:{x,y} }
+let vrmLoading = null, vrmRunning = false, vrmLast = 0, mouthPreset = 'aa', blinkPreset = 'blink';
+let vrmBlinkAt = now() + rand(1800, 5200), vrmBlinkT = 0;
+const vrmCanvas = $('vrm3d');
+const EMOTION_VRM = { happy: 'happy', love: 'happy', sad: 'sad', angry: 'angry', surprised: 'surprised', curious: 'surprised' };
+
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = ok;
+    s.onerror = () => fail(new Error('Không tải được ' + src));
+    document.head.append(s);
+  });
+}
+async function readOpfsModel(name = 'tris-companion.vrm') {
+  try {
+    const root = await navigator.storage?.getDirectory?.();
+    if (!root) return null;
+    return await (await root.getFileHandle(name)).getFile();
+  } catch { return null; }
+}
+async function saveOpfsModel(file, name = 'tris-companion.vrm') {
+  try {
+    const root = await navigator.storage?.getDirectory?.();
+    if (!root) return;
+    const fh = await root.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(file);
+    await w.close();
+  } catch {}
+}
+
+async function loadVrmFromUrl(url) {
+  if (!window.THREE) await loadScript('/companion/lib/three.min.js');
+  if (!window.THREE.GLTFLoader) await loadScript('/companion/lib/GLTFLoader.js');
+  if (!window.THREE_VRM) await loadScript('/companion/lib/three-vrm.min.js');
+  const loader = new THREE.GLTFLoader();
+  loader.register((parser) => new THREE_VRM.VRMLoaderPlugin(parser));
+  const gltf = await new Promise((ok, fail) =>
+    loader.load(url, ok, undefined, () => fail(new Error('Không đọc được tệp model này.'))));
+  const model = gltf.userData.vrm;
+  if (!model) throw new Error('Tệp không chứa dữ liệu VRM. Hãy xuất .vrm từ VRoid Studio hoặc dùng model VRM chuẩn.');
+  // Dọn rác sẵn khi nạp: gộp xương thừa, hạ số đỉnh — model VRoid thường nhẹ đi đáng kể.
+  try {
+    THREE_VRM.VRMUtils.removeUnnecessaryVertices?.(gltf.scene);
+    if (THREE_VRM.VRMUtils.combineSkeletons) THREE_VRM.VRMUtils.combineSkeletons(gltf.scene);
+    else THREE_VRM.VRMUtils.removeUnnecessaryJoints?.(gltf.scene);
+    if (THREE_VRM.VRMUtils.rotateVRM0 && model.meta?.metaVersion === '0') THREE_VRM.VRMUtils.rotateVRM0(model);
+  } catch {}
+  return model;
+}
+
+function pickMouthPreset(model) {
+  const em = model.expressionManager;
+  if (!em) return 'aa';
+  for (const name of ['aa', 'a']) {
+    try { if (em.getExpression?.(name)) return name; } catch {}
+  }
+  return 'aa';
+}
+
+async function ensureVrm(sourceUrl) {
+  if (vrm && !sourceUrl) { startVrmLoop(); return vrm; }
+  if (vrmLoading) return vrmLoading;
+  vrmLoading = (async () => {
+    let model;
+    if (sourceUrl) { setStatus('Đang nạp model 3D…', true); model = await loadVrmFromUrl(sourceUrl); }
+    else {
+      const file = await readOpfsModel();
+      if (!file) return null;
+      setStatus('Đang nạp model 3D…', true);
+      const url = URL.createObjectURL(file);
+      try { model = await loadVrmFromUrl(url); } finally { URL.revokeObjectURL(url); }
+    }
+    if (vrm?.model) vrm.scene.remove(vrm.model.scene);
+    if (!vrm) {
+      const renderer = new THREE.WebGLRenderer({ canvas: vrmCanvas, alpha: true, antialias: false });
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.25)); // chặn pixel ratio — tối ưu GPU yếu
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x33364a, 1.1));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+      dir.position.set(1, 2, 2);
+      scene.add(dir);
+      const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
+      vrm = { renderer, scene, camera, model: null, mouse: { x: 0, y: 0 } };
+      sizeVrm();
+      window.addEventListener('resize', sizeVrm);
+      stage.addEventListener('pointermove', (e) => {
+        const r = stage.getBoundingClientRect();
+        vrm.mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+        vrm.mouse.y = ((e.clientY - r.top) / r.height) * 2 - 1;
+      });
+    }
+    // khung hình: đặt camera bao trọn nhân vật
+    const box = new THREE.Box3().setFromObject(model.scene);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    model.scene.position.sub(center);
+    vrm.camera.position.set(0, size.y * 0.55, size.y * 1.45);
+    vrm.camera.lookAt(0, size.y * 0.52, 0);
+    vrm.scene.add(model.scene);
+    vrm.model = model;
+    mouthPreset = pickMouthPreset(model);
+    blinkPreset = (() => {
+      const em = model.expressionManager;
+      for (const name of ['blink', 'blinkL']) { try { if (em?.getExpression?.(name)) return name; } catch {} }
+      return 'blink';
+    })();
+    try { model.lookAt && (model.lookAt.target = vrm.camera); } catch {}
+    sizeVrm();
+    window.__vrm = vrm; // gỡ lỗi/kiểm thử
+    setStatus('');
+    if (settings.liveMode === 'vrm') startVrmLoop();
+    return vrm;
+  })();
+  try { return await vrmLoading; } finally { vrmLoading = null; }
+}
+
+function sizeVrm() {
+  if (!vrm) return;
+  const box = vrmCanvas.parentElement;
+  const w = box.clientWidth, h = box.clientHeight;
+  vrm.renderer.setSize(w, h, false);
+  vrm.camera.aspect = w / Math.max(1, h);
+  vrm.camera.updateProjectionMatrix();
+}
+
+function startVrmLoop() {
+  if (!vrm || vrmRunning || hidden || settings.liveMode !== 'vrm') return;
+  vrmRunning = true;
+  vrmLast = 0;
+  requestAnimationFrame(vrmFrame);
+}
+function stopVrmLoop() { vrmRunning = false; }
+
+function vrmFrame(t) {
+  if (!vrmRunning) return;
+  requestAnimationFrame(vrmFrame);
+  if (hidden) { vrmRunning = false; return; } // visibilitychange sẽ khởi động lại
+  if (t - vrmLast < 1000 / Math.max(settings.fps, 10) - 1) return;
+  vrmLast = t;
+  const time = t / 1000;
+  const model = vrm.model;
+  if (!model) return;
+  const h = model.humanoid;
+  if (h?.getNormalizedBoneNode) {
+    const spine = h.getNormalizedBoneNode('spine');
+    if (spine) spine.rotation.x = Math.sin(time * 1.5) * 0.02;
+    const head = h.getNormalizedBoneNode('head');
+    if (head) {
+      head.rotation.y = vrm.mouse.x * 0.45;
+      head.rotation.x = vrm.mouse.y * 0.3;
+    }
+  }
+  const em = model.expressionManager;
+  if (em) {
+    if (t >= vrmBlinkAt) { vrmBlinkT = 1; vrmBlinkAt = t + rand(2200, 5600); }
+    if (vrmBlinkT > 0) {
+      vrmBlinkT = Math.max(0, vrmBlinkT - 16 / 140);
+      em.setValue(blinkPreset, Math.sin(Math.min(1, vrmBlinkT) * Math.PI) * 0.95);
+    } else em.setValue(blinkPreset, 0);
+    em.setValue(mouthPreset, mouthShown);
+    // Emotion từ airi: bật expression theo cảm xúc, tự decay về neutral.
+    const emotionPreset = EMOTION_VRM[currentEmotion];
+    for (const name of ['happy', 'sad', 'angry', 'surprised']) {
+      if (name === mouthPreset) continue;
+      try {
+        if (!em.getExpression?.(name)) continue;
+        em.setValue(name, name === emotionPreset && performance.now() < emotionUntil ? 0.6 : 0);
+      } catch {}
+    }
+  }
+  try { model.update(1 / 30); } catch {}
+  vrm.renderer.render(vrm.scene, vrm.camera);
+}
+
+async function acceptVrmFile(file) {
+  if (!/\.(vrm|glb)$/i.test(file.name)) {
+    addMsg('tris', '⚠ Model 3D nhận tệp .vrm (chuẩn nhân vật) hoặc .glb. Tệp của bạn: ' + file.name, 'err');
+    return;
+  }
+  // .glb thường (như tris_mascot.glb) chạy ở chế độ Tris 3D; .vrm dùng chế độ VRM.
+  if (/\.glb$/i.test(file.name)) { await acceptGlbFile(file); return; }
+  const url = URL.createObjectURL(file);
+  try {
+    setMode('vrm');
+    await ensureVrm(url);
+    await saveOpfsModel(file);
+    $('vrm-note').textContent = 'Đang dùng: ' + file.name + (file.size > 10 * 1024 * 1024 ? ' · hơi nặng, nên tối ưu bằng scripts\\optimize_vrm.py' : '');
+    addMsg('tris', 'Đã nạp model 3D: ' + file.name + ' ✦\nNhìn nghiêng di chuột nhé — nhân vật sẽ nhìn theo bạn.');
+  } catch (e) {
+    setStatus('');
+    addMsg('tris', '⚠ ' + e.message, 'err');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+$('vrm-pick').addEventListener('click', () => $('vrm-file').click());
+$('vrm-file').addEventListener('change', (e) => {
+  const file = e.target.files?.[0];
+  if (file) void acceptVrmFile(file);
+  e.target.value = '';
+});
+stage.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); stage.classList.add('drop-hint'); } });
+stage.addEventListener('dragleave', () => stage.classList.remove('drop-hint'));
+stage.addEventListener('drop', (e) => {
+  e.preventDefault();
+  stage.classList.remove('drop-hint');
+  const file = e.dataTransfer?.files?.[0];
+  if (file) void acceptVrmFile(file);
+});
+
+/* ============ chat ============ */
+let busy = false;
+const chatHistory = [];
+function setStatus(text, dots = false) {
+  statusEl.innerHTML = '';
+  if (!text) return;
+  const s = document.createElement('span'); s.textContent = text;
+  statusEl.append(s);
+  if (dots) { const d = document.createElement('span'); d.className = 'dots'; statusEl.append(d); }
+}
+function addMsg(role, text, cls = '') {
+  const node = document.createElement('div');
+  node.className = 'msg ' + (role === 'user' ? 'user' : 'tris ' + cls);
+  if (role !== 'user') { const who = document.createElement('div'); who.className = 'who'; who.textContent = 'TRIS'; node.append(who); }
+  node.appendChild(document.createTextNode(text));
+  messagesEl.append(node);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return node;
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text || busy) return;
+  markActivity();
+  input.value = '';
+  input.style.height = '';
+  addMsg('user', text);
+  chatHistory.push({ role: 'user', content: text });
+  busy = true; sendBtn.disabled = true;
+  const stopWorking = startWorking();
+  // Giọng của lượt trước dừng ngay; lượt mới đọc song song với chữ đang hiện.
+  const voiceGen = settings.autoSpeak ? beginSpeechTurn() : (cancelSpeech(), -1);
+  thinking = true;
+  const node = addMsg('tris', '');
+  const textNode = node.lastChild;
+  const splitter = createSentenceSplitter((sentence, raw) => {
+    const emotion = detectEmotion(raw);
+    if (voiceGen >= 0) languageSegments(raw).forEach((seg, i) => enqueueSpeech(seg.text, i === 0 ? emotion : null, voiceGen, seg.lang));
+    else setEmotion(emotion);
+  });
+  let answer = '';
+  try {
+    const res = await fetch('/v1/workspace/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers() },
+      body: JSON.stringify({
+        message: text,
+        mode: 'Conversation', action: 'auto',
+        scenario: 'Coffee Shop',
+        model: '', language: 'vi',
+        web_search: false,
+        history: chatHistory.slice(-13, -1).map((m) => ({ role: m.role, content: m.content.slice(0, 8000) })),
+        follow_up: false,
+      }),
+    });
+    if (res.status === 401) { showAuthHint(); throw new Error('Cần đăng nhập — mở Companion từ ứng dụng Tris nhé.'); }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : 'Lỗi ' + res.status);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', doneAll = false;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n'); buf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.error) throw new Error(ev.error);
+        // ev.status (thông báo kỹ thuật của backend) không hiện ra nữa — chỉ "Working..." ở góc chat.
+        if (ev.delta) {
+          thinking = false;
+          answer += ev.delta;
+          textNode.nodeValue = answer;
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+          splitter.push(ev.delta);
+        }
+        if (ev.done) doneAll = true;
+      }
+    }
+    if (!doneAll) throw new Error('Kết nối bị ngắt trước khi Tris trả lời xong.');
+    splitter.end();
+    answer = answer.replace(/\[Tris media:[^\]]+\]\(\/v1\/media\/[^)]+\)/g, '').trim();
+    textNode.nodeValue = answer;
+    chatHistory.push({ role: 'assistant', content: answer });
+  } catch (e) {
+    if (voiceGen >= 0) cancelSpeech();
+    node.textContent = e.message || 'Có lỗi kết nối với backend Tris.';
+    node.className = 'msg err';
+  } finally {
+    thinking = false;
+    if (voiceGen >= 0) endSpeechTurn(voiceGen);
+    stopWorking();
+    busy = false; sendBtn.disabled = false;
+  }
+}
+
+/* ============ voice in: MediaRecorder → /v1/workspace/transcribe ============ */
+let recorder = null, micStream = null, micStarting = false;
+$('mic-btn').addEventListener('click', async () => {
+  const btn = $('mic-btn');
+  markActivity();
+  if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+  if (micStarting) return; // đang chờ quyền/thiết bị micro: bỏ qua lần bấm thứ hai
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    addMsg('tris', '⚠ Trình duyệt này chưa hỗ trợ ghi âm.', 'err'); return;
+  }
+  cancelSpeech(); // không thu lại giọng của chính Tris
+  micStarting = true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    micStarting = false;
+    listening = false;
+    addMsg('tris', '⚠ Không bật được micro: ' + (e.message || e.name), 'err');
+    return;
+  }
+  micStarting = false;
+  try {
+    // Mỗi lượt ghi có bộ đệm và luồng micro riêng: một lượt không bao giờ trộn dữ liệu của lượt khác.
+    micStream = stream;
+    const parts = [];
+    const rec = new MediaRecorder(stream);
+    recorder = rec;
+    rec.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      btn.classList.remove('rec');
+      listening = false;
+      setStatus('');
+      const blob = new Blob(parts, { type: rec.mimeType || 'audio/webm' });
+      if (blob.size < 128) return;
+      const fd = new FormData();
+      fd.set('language', 'auto');
+      fd.set('file', blob, 'companion.webm');
+      const stopWorking = startWorking();
+      thinking = true;
+      try {
+        const res = await fetch('/v1/workspace/transcribe', { method: 'POST', headers: headers(), body: fd });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || 'Lỗi ' + res.status); }
+        const r = await res.json();
+        input.value = (input.value ? input.value.trimEnd() + ' ' : '') + r.text;
+        input.focus();
+      } catch (e) { addMsg('tris', '⚠ ' + e.message, 'err'); }
+      finally { thinking = busy; stopWorking(); }
+    };
+    rec.start(250);
+    btn.classList.add('rec');
+    listening = true;
+    setStatus('Đang nghe… bấm lại để gửi vào ô soạn thảo', true);
+  } catch (e) {
+    listening = false;
+    addMsg('tris', '⚠ Không bật được micro: ' + (e.message || e.name), 'err');
+  }
+});
+
+/* ============ settings wiring ============ */
+$('voice-toggle').addEventListener('click', () => {
+  settings.autoSpeak = !settings.autoSpeak;
+  store.set('tris.companion.settings', settings);
+  $('voice-toggle').classList.toggle('on', settings.autoSpeak);
+  $('voice-toggle').setAttribute('aria-pressed', String(settings.autoSpeak));
+  $('voice-label').textContent = settings.autoSpeak ? 'Đang mở giọng' : 'Tắt giọng nói';
+  if (settings.autoSpeak) ensureAudio(); // mở AudioContext ngay trong cú bấm của người dùng
+  else cancelSpeech();
+});
+$('settings-toggle').addEventListener('click', () => {
+  const pop = $('settings-pop');
+  const open = pop.classList.toggle('open');
+  $('settings-toggle').setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', (e) => {
+  const pop = $('settings-pop');
+  if (pop.classList.contains('open') && !pop.contains(e.target) && e.target.closest('#settings-toggle') === null)
+    pop.classList.remove('open');
+});
+$('fps-select').addEventListener('change', (e) => {
+  settings.fps = Number(e.target.value);
+  store.set('tris.companion.settings', settings);
+  $('fps-note').textContent = 'FPS: ' + settings.fps;
+});
+$('bounce-check').addEventListener('change', (e) => {
+  settings.bounce = e.target.checked;
+  store.set('tris.companion.settings', settings);
+});
+$('wander-check').addEventListener('change', (e) => {
+  settings.wander = e.target.checked;
+  store.set('tris.companion.settings', settings);
+  if (!settings.wander) actor.targetX = actor.x;
+});
+
+/* ============ boot ============ */
+function showAuthHint() { $('auth-hint').classList.remove('hidden'); }
+sendBtn.addEventListener('click', send);
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+input.addEventListener('input', () => {
+  input.style.height = '0px';
+  input.style.height = Math.min(130, Math.max(44, input.scrollHeight)) + 'px';
+});
+// Gỡ lỗi/kiểm thử tự động.
+window.__companion = {
+  detectEmotion, speakable, createSentenceSplitter, languageSegments, setEmotion,
+  get emotion() { return currentEmotion; },
+  get expression() { return expressionName(); },
+  get actor() { return actor; },
+  get speech() { return { queued: speech.queue.length, ready: speech.ready.length, playing: !!speech.playing, synthBusy: speech.synthBusy, talking: talkingTurn }; },
+  // Chạy đúng một khung hình (kiểm thử khi trình duyệt không cấp rAF, vd. tab nền).
+  step(dt = 33) {
+    const t = now();
+    updateLipsync(t, dt);
+    if (settings.liveMode === 'vrm') return;
+    updateBehavior(t, dt);
+    if (settings.liveMode === 'svg') renderMascot(t, dt); else renderGlb(t, dt);
+  },
+  setMode, ensureGlb,
+};
+addMsg('tris', 'Chào bạn, mình là Tris ✦\nBật 🔊 nếu muốn mình nói nhé — giọng và não của mình đều chạy trên máy bạn thôi.');
+setEmotion('happy', 2200);
+wave(1800);
+(async () => {
+  try {
+    const res = await fetch('/health');
+    const h = await res.json();
+    $('backend-note').textContent = h.status === 'ok'
+      ? (h.auth_required && !token ? 'Local · cần đăng nhập' : 'Local · Tris · mọi thứ chạy trên máy bạn')
+      : 'Backend chưa phản hồi';
+    if (h.auth_required && !token) showAuthHint();
+  } catch { $('backend-note').textContent = 'Backend chưa phản hồi'; }
+  setMode(settings.liveMode);
+  if (settings.liveMode === 'vrm') {
+    void ensureVrm().then((r) => {
+      if (!r && settings.liveMode === 'vrm') setStatus('Chưa có model 3D — kéo thả tệp .vrm vào sân khấu, hoặc bấm ⚙ Tối ưu để chọn tệp.', true);
+    }).catch((e) => { setStatus(''); addMsg('tris', '⚠ Không nạp được model 3D đã lưu: ' + e.message, 'err'); });
+  }
+})();
+</script>
+</body>
+</html>

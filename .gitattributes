@@ -1,0 +1,14 @@
+# Store text with LF in the repository; Windows scripts keep CRLF on checkout.
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.webp binary
+*.ico binary
+*.glb binary
+*.vrm binary
+*.wav binary
+*.mp3 binary
+*.docx binary

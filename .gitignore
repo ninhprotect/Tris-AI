@@ -1,0 +1,33 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets and machine-local settings
+.env
+.env.*
+!.env.example
+.vscode/*
+!.vscode/launch.json
+
+# Learner data, databases and logs (private, created at runtime)
+data/*
+!data/.gitkeep
+backups/
+exports/
+*.log
+
+# Runtimes, models and voice references (large; installed by scripts/setup_*).
+# Only the small server scripts that live inside runtime/ are versioned.
+runtime/*
+!runtime/xtts/
+runtime/xtts/*
+!runtime/xtts/clone_server.py
+!runtime/xtts/start_clone.py
+!runtime/xtts/tts_server.py
+!runtime/imagegen/
+runtime/imagegen/*
+!runtime/imagegen/generate.py
+blobs/
+manifests/
